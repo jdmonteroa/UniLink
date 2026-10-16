@@ -1,0 +1,220 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  UniLink — "campus, pero ligero"
+  Base de DESIGN.md: papel hueso / carbón, tinta / tiza y Crimson Academic
+  como único color de acción. Encima, tres colores "sticker" (menta, girasol,
+  coral) que identifican los modos Estudio, Amistad y Pareja.
+
+  Los nombres de las escalas se conservan (brand, azure, haze, ink, slate) para
+  que todas las pantallas hereden la paleta nueva sin reescribir cada clase:
+    brand  → Crimson Academic
+    azure  → menta (verificación, modo Estudio)
+    haze   → neutros cálidos de papel
+    ink    → superficies carbón del modo noche
+    slate  → neutros cálidos para texto (900 = Ink Black, 50 = Chalk White)
+*/
+@theme {
+  /* Crimson Academic */
+  --color-brand-50: #fdf1f3;
+  --color-brand-100: #fadde3;
+  --color-brand-200: #f4b9c5;
+  --color-brand-300: #f0899c;
+  --color-brand-400: #e8576f;
+  --color-brand-500: #c8173b;
+  --color-brand-600: #a30021;
+  --color-brand-700: #8a001c;
+  --color-brand-800: #6e0017;
+  --color-brand-900: #540012;
+  --color-brand-950: #33000b;
+
+  /* Menta: verificación y modo Estudio */
+  --color-azure-50: #eefbf5;
+  --color-azure-100: #d3f5e6;
+  --color-azure-200: #b0edd4;
+  --color-azure-300: #8fe3c0;
+  --color-azure-400: #5fd0a5;
+  --color-azure-500: #2fae83;
+  --color-azure-600: #18785a;
+  --color-azure-700: #135f48;
+  --color-azure-800: #104b3a;
+  --color-azure-900: #0d3d30;
+  --color-azure-950: #062219;
+
+  /* Neutros cálidos (papel hueso) */
+  --color-haze-50: #f5f4f0;
+  --color-haze-100: #eceae4;
+  --color-haze-200: #e0ddd5;
+  --color-haze-300: #c9c5bb;
+  --color-haze-400: #a29e94;
+  --color-haze-500: #7d7970;
+  --color-haze-600: #615e57;
+  --color-haze-700: #4a4843;
+  --color-haze-800: #33322e;
+  --color-haze-900: #22211f;
+  --color-haze-950: #171715;
+
+  /* Superficies del modo noche (Charcoal Night → más claro) */
+  --color-ink-950: #121212;
+  --color-ink-900: #171717;
+  --color-ink-850: #1c1c1c;
+  --color-ink-800: #242424;
+  --color-ink-700: #2e2e2e;
+
+  /* Texto: neutros cálidos con Ink Black y Chalk White en los extremos */
+  --color-slate-50: #f9f9fb;
+  --color-slate-100: #f1f0ec;
+  --color-slate-200: #e3e1db;
+  --color-slate-300: #cfccc4;
+  --color-slate-400: #858178;
+  --color-slate-500: #6b6860;
+  --color-slate-600: #55534d;
+  --color-slate-700: #403e3a;
+  --color-slate-800: #2a2927;
+  --color-slate-900: #1c1c1e;
+  --color-slate-950: #111112;
+
+  /* Stickers: un color por modo de conexión */
+  --color-sun: #ffc93c;
+  --color-mint: #8fe3c0;
+  --color-coral: #ff9db0;
+  --color-mode-study: #8fe3c0;
+  --color-mode-friendship: #ffc93c;
+  --color-mode-dating: #ff9db0;
+  --color-mode-study-dark: #5fd0a5;
+  --color-mode-friendship-dark: #f5b400;
+  --color-mode-dating-dark: #ff7a94;
+  --color-surface-cardDark: #171717;
+
+  --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-serif: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-display: 'Fraunces', Georgia, serif;
+
+  /* Esquinas: suaves pero sin "burbuja" (PRODUCT.md) */
+  --radius-2xl: 0.75rem;
+  --radius-3xl: 1rem;
+  --radius-4xl: 1.25rem;
+
+  /* Sombras cálidas con desplazamiento; nada de halos flotantes */
+  --shadow-soft-sm: 0 1px 2px rgba(28, 28, 30, 0.05), 0 2px 6px -2px rgba(28, 28, 30, 0.06);
+  --shadow-soft-md: 0 1px 2px rgba(28, 28, 30, 0.05), 0 8px 20px -10px rgba(28, 28, 30, 0.12);
+  --shadow-soft-lg: 0 1px 3px rgba(28, 28, 30, 0.05), 0 14px 32px -16px rgba(28, 28, 30, 0.2);
+  --shadow-glow-brand: 0 6px 16px -6px rgba(163, 0, 33, 0.5);
+  --shadow-glow-gradient: 0 6px 16px -6px rgba(163, 0, 33, 0.5);
+  --shadow-sticker: 0 2px 0 rgba(28, 28, 30, 0.12);
+}
+
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-haze-200, currentcolor);
+  }
+
+  .dark *,
+  .dark ::after,
+  .dark ::before {
+    border-color: var(--color-ink-700, currentcolor);
+  }
+}
+
+@layer base {
+  :root {
+    --font-heading: 'Fraunces', Georgia, serif;
+    --font-body: 'Plus Jakarta Sans', system-ui, sans-serif;
+    --bg-main: #f5f4f0;
+    color-scheme: light;
+  }
+
+  .dark {
+    --bg-main: #121212;
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background-color: var(--bg-main);
+    color: #1c1c1e;
+    overscroll-behavior-y: none;
+    transition: background-color 0.4s ease, color 0.4s ease;
+  }
+
+  .dark body {
+    color: #f9f9fb;
+  }
+
+  /* Títulos y nombres: Fraunces suave y con "wonk" para un tono cercano */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  .font-serif {
+    font-family: var(--font-heading);
+    font-variation-settings: 'SOFT' 100, 'WONK' 1;
+    letter-spacing: -0.02em;
+  }
+
+  ::selection {
+    background: var(--color-sun);
+    color: #1c1c1e;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+
+  .dark :focus-visible {
+    outline-color: var(--color-brand-400);
+  }
+
+  input,
+  textarea,
+  select {
+    caret-color: var(--color-brand-600);
+  }
+
+  .dark input,
+  .dark textarea,
+  .dark select {
+    caret-color: var(--color-brand-400);
+  }
+
+  input[type='checkbox'],
+  input[type='radio'] {
+    accent-color: var(--color-brand-600);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Scroll invisible en toda la app: se sigue pudiendo desplazar con el dedo,
+   la rueda o el teclado, solo se oculta la barra. */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+}
