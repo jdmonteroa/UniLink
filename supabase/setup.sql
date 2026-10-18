@@ -1220,6 +1220,447 @@ REVOKE EXECUTE ON FUNCTION public.mark_conversation_read(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.ensure_my_profile() FROM anon;
 
 
+-- ------------------------------------------------------------------------------
+-- 2.12 GRUPOS (visibles para toda la universidad, entrada con aprobación)
+-- Cualquiera puede crear un grupo y queda como creador y administrador. El enlace
+-- del grupo (WhatsApp u otra red) se guarda en group_links y SOLO lo puede leer
+-- quien ya es miembro. Para entrar se manda una solicitud que aprueba un admin.
+-- Nada se escribe directo en las tablas: todo pasa por las funciones de abajo.
+-- (Las tablas viejas study_groups/study_group_members ya no se usan.)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.groups (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    university_id UUID NOT NULL REFERENCES public.universities(id) ON DELETE CASCADE,
+    name TEXT NOT NULL CHECK (char_length(name) BETWEEN 3 AND 60),
+    description TEXT NOT NULL DEFAULT '' CHECK (char_length(description) <= 500),
+    category TEXT NOT NULL DEFAULT 'otro' CHECK (category IN (
+        'estudio','deporte','arte','musica','videojuegos','tecnologia','idiomas','voluntariado','social','otro')),
+    image_path TEXT,
+    created_by UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.group_links (
+    group_id UUID PRIMARY KEY REFERENCES public.groups(id) ON DELETE CASCADE,
+    url TEXT NOT NULL CHECK (char_length(url) <= 300)
+);
+
+CREATE TABLE IF NOT EXISTS public.group_members (
+    group_id UUID NOT NULL REFERENCES public.groups(id) ON DELETE CASCADE,
+    profile_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY(group_id, profile_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.group_join_requests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    group_id UUID NOT NULL REFERENCES public.groups(id) ON DELETE CASCADE,
+    profile_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    message TEXT CHECK (char_length(message) <= 200),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    resolved_at TIMESTAMPTZ,
+    UNIQUE(group_id, profile_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_groups_university ON public.groups(university_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_group_members_profile ON public.group_members(profile_id);
+CREATE INDEX IF NOT EXISTS idx_group_requests_group ON public.group_join_requests(group_id, status);
+
+ALTER TABLE public.groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_join_requests ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION public.is_group_member(p_group UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM public.group_members WHERE group_id = p_group AND profile_id = auth.uid());
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_group_admin(p_group UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.group_members WHERE group_id = p_group AND profile_id = auth.uid() AND role = 'admin'
+  );
+$$;
+
+-- Solo lectura. Cualquier escritura se hace con las funciones (SECURITY DEFINER).
+DROP POLICY IF EXISTS "Ver grupos de mi universidad (nuevos)" ON public.groups;
+CREATE POLICY "Ver grupos de mi universidad (nuevos)" ON public.groups FOR SELECT TO authenticated
+USING (university_id = public.get_my_university_id());
+
+DROP POLICY IF EXISTS "Ver enlace solo si soy miembro" ON public.group_links;
+CREATE POLICY "Ver enlace solo si soy miembro" ON public.group_links FOR SELECT TO authenticated
+USING (public.is_group_member(group_id));
+
+DROP POLICY IF EXISTS "Ver miembros de mis grupos" ON public.group_members;
+CREATE POLICY "Ver miembros de mis grupos" ON public.group_members FOR SELECT TO authenticated
+USING (public.is_group_member(group_id));
+
+DROP POLICY IF EXISTS "Ver mis solicitudes o las de mis grupos" ON public.group_join_requests;
+CREATE POLICY "Ver mis solicitudes o las de mis grupos" ON public.group_join_requests FOR SELECT TO authenticated
+USING (profile_id = auth.uid() OR public.is_group_admin(group_id));
+
+-- Enlace permitido: https:// y solo redes/mensajeros conocidos (evita enlaces raros).
+CREATE OR REPLACE FUNCTION public.validate_group_link(p_url TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE
+AS $$
+DECLARE
+  u TEXT := btrim(COALESCE(p_url, ''));
+  host TEXT;
+BEGIN
+  IF u = '' OR char_length(u) > 300 OR u !~* '^https://[^[:space:]/?#]+([/?#][^[:space:]]*)?$' THEN
+    RAISE EXCEPTION 'Pega el enlace completo del grupo (debe empezar con https://).';
+  END IF;
+  host := regexp_replace(lower(substring(u from '^[hH][tT][tT][pP][sS]://([^/?#]+)')), '^www\.', '');
+  IF host NOT IN (
+    'chat.whatsapp.com', 'whatsapp.com', 'wa.me',
+    'instagram.com', 'ig.me',
+    't.me', 'telegram.me', 'telegram.dog',
+    'discord.gg', 'discord.com',
+    'facebook.com', 'm.facebook.com', 'fb.me', 'm.me',
+    'signal.group', 'signal.me'
+  ) THEN
+    RAISE EXCEPTION 'Usa un enlace de WhatsApp, Instagram, Telegram, Discord, Facebook o Signal.';
+  END IF;
+  RETURN u;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.create_group(TEXT, TEXT, TEXT, TEXT, TEXT);
+CREATE FUNCTION public.create_group(
+  p_name TEXT, p_description TEXT, p_category TEXT, p_image_path TEXT, p_link TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+DECLARE
+  me UUID := auth.uid();
+  uni UUID;
+  nm TEXT := btrim(COALESCE(p_name, ''));
+  ds TEXT := btrim(COALESCE(p_description, ''));
+  new_id UUID;
+BEGIN
+  IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión para crear un grupo.'; END IF;
+  SELECT university_id INTO uni FROM public.profiles
+  WHERE id = me AND onboarding_completed = TRUE AND is_suspended = FALSE;
+  IF uni IS NULL THEN RAISE EXCEPTION 'Completa tu perfil para crear grupos.'; END IF;
+
+  IF char_length(nm) < 3 OR char_length(nm) > 60 THEN
+    RAISE EXCEPTION 'El nombre del grupo debe tener entre 3 y 60 caracteres.';
+  END IF;
+  IF char_length(ds) > 500 THEN RAISE EXCEPTION 'La descripción puede tener máximo 500 caracteres.'; END IF;
+  IF p_category NOT IN ('estudio','deporte','arte','musica','videojuegos','tecnologia','idiomas','voluntariado','social','otro') THEN
+    RAISE EXCEPTION 'Elige una categoría válida.';
+  END IF;
+  IF p_image_path IS NOT NULL AND p_image_path NOT LIKE me::TEXT || '/%' THEN
+    RAISE EXCEPTION 'Imagen no válida.';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.groups WHERE created_by = me) >= 5 THEN
+    RAISE EXCEPTION 'Ya creaste 5 grupos. Elimina uno para crear otro.';
+  END IF;
+
+  INSERT INTO public.groups (university_id, name, description, category, image_path, created_by)
+  VALUES (uni, nm, ds, p_category, p_image_path, me)
+  RETURNING id INTO new_id;
+  INSERT INTO public.group_links (group_id, url) VALUES (new_id, public.validate_group_link(p_link));
+  INSERT INTO public.group_members (group_id, profile_id, role) VALUES (new_id, me, 'admin');
+  RETURN new_id;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.update_group(UUID, TEXT, TEXT, TEXT, TEXT, TEXT);
+CREATE FUNCTION public.update_group(
+  p_group UUID, p_name TEXT, p_description TEXT, p_category TEXT, p_image_path TEXT, p_link TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  nm TEXT := btrim(COALESCE(p_name, ''));
+  ds TEXT := btrim(COALESCE(p_description, ''));
+BEGIN
+  IF NOT public.is_group_admin(p_group) THEN RAISE EXCEPTION 'Solo los administradores pueden editar el grupo.'; END IF;
+  IF char_length(nm) < 3 OR char_length(nm) > 60 THEN
+    RAISE EXCEPTION 'El nombre del grupo debe tener entre 3 y 60 caracteres.';
+  END IF;
+  IF char_length(ds) > 500 THEN RAISE EXCEPTION 'La descripción puede tener máximo 500 caracteres.'; END IF;
+  IF p_category NOT IN ('estudio','deporte','arte','musica','videojuegos','tecnologia','idiomas','voluntariado','social','otro') THEN
+    RAISE EXCEPTION 'Elige una categoría válida.';
+  END IF;
+  IF p_image_path IS NOT NULL AND p_image_path NOT LIKE me::TEXT || '/%'
+     AND p_image_path IS DISTINCT FROM (SELECT image_path FROM public.groups WHERE id = p_group) THEN
+    RAISE EXCEPTION 'Imagen no válida.';
+  END IF;
+
+  UPDATE public.groups SET name = nm, description = ds, category = p_category, image_path = p_image_path
+  WHERE id = p_group;
+  IF p_link IS NOT NULL AND btrim(p_link) <> '' THEN
+    UPDATE public.group_links SET url = public.validate_group_link(p_link) WHERE group_id = p_group;
+  END IF;
+END;
+$$;
+
+-- Devuelve la ruta de la imagen para que la app pueda borrar el archivo.
+DROP FUNCTION IF EXISTS public.delete_group(UUID);
+CREATE FUNCTION public.delete_group(p_group UUID)
+RETURNS TEXT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE img TEXT;
+BEGIN
+  SELECT image_path INTO img FROM public.groups WHERE id = p_group AND created_by = auth.uid();
+  IF NOT FOUND THEN RAISE EXCEPTION 'Solo el creador puede eliminar el grupo.'; END IF;
+  DELETE FROM public.groups WHERE id = p_group;
+  RETURN img;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.list_groups();
+CREATE FUNCTION public.list_groups()
+RETURNS TABLE (
+  id UUID, name TEXT, description TEXT, category TEXT, image_path TEXT,
+  created_by UUID, creator_name TEXT, created_at TIMESTAMPTZ,
+  member_count INTEGER, my_role TEXT, my_request_status TEXT, pending_requests INTEGER
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+DECLARE me UUID := auth.uid();
+BEGIN
+  IF me IS NULL THEN RETURN; END IF;
+  RETURN QUERY
+  SELECT g.id, g.name, g.description, g.category, g.image_path,
+         g.created_by, p.full_name, g.created_at,
+         (SELECT COUNT(*) FROM public.group_members m WHERE m.group_id = g.id)::INTEGER,
+         mine.role,
+         req.status,
+         CASE WHEN mine.role = 'admin'
+              THEN (SELECT COUNT(*) FROM public.group_join_requests r WHERE r.group_id = g.id AND r.status = 'pending')::INTEGER
+              ELSE 0 END
+  FROM public.groups g
+  JOIN public.profiles p ON p.id = g.created_by
+  LEFT JOIN public.group_members mine ON mine.group_id = g.id AND mine.profile_id = me
+  LEFT JOIN public.group_join_requests req ON req.group_id = g.id AND req.profile_id = me
+  WHERE g.university_id = public.get_my_university_id()
+  ORDER BY (mine.role IS NOT NULL) DESC, g.created_at DESC;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.get_group_link(UUID);
+CREATE FUNCTION public.get_group_link(p_group UUID)
+RETURNS TEXT
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE link TEXT;
+BEGIN
+  IF NOT public.is_group_member(p_group) THEN RAISE EXCEPTION 'Solo los miembros pueden ver el enlace.'; END IF;
+  SELECT url INTO link FROM public.group_links WHERE group_id = p_group;
+  RETURN link;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.request_join_group(UUID, TEXT);
+CREATE FUNCTION public.request_join_group(p_group UUID, p_message TEXT DEFAULT NULL)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  existing RECORD;
+  msg TEXT := NULLIF(btrim(COALESCE(p_message, '')), '');
+BEGIN
+  IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión primero.'; END IF;
+  IF msg IS NOT NULL AND char_length(msg) > 200 THEN RAISE EXCEPTION 'El mensaje puede tener máximo 200 caracteres.'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.groups WHERE id = p_group AND university_id = public.get_my_university_id()) THEN
+    RAISE EXCEPTION 'Ese grupo no existe.';
+  END IF;
+  IF public.is_group_member(p_group) THEN RAISE EXCEPTION 'Ya eres miembro de este grupo.'; END IF;
+
+  SELECT * INTO existing FROM public.group_join_requests WHERE group_id = p_group AND profile_id = me;
+  IF FOUND AND existing.status = 'pending' THEN RAISE EXCEPTION 'Ya tienes una solicitud pendiente.'; END IF;
+  IF FOUND AND existing.status = 'rejected' AND existing.resolved_at > NOW() - INTERVAL '3 days' THEN
+    RAISE EXCEPTION 'Tu solicitud fue rechazada. Podrás intentarlo de nuevo en unos días.';
+  END IF;
+
+  INSERT INTO public.group_join_requests (group_id, profile_id, message)
+  VALUES (p_group, me, msg)
+  ON CONFLICT (group_id, profile_id) DO UPDATE
+    SET status = 'pending', message = EXCLUDED.message, created_at = NOW(), resolved_by = NULL, resolved_at = NULL;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.cancel_join_request(UUID);
+CREATE FUNCTION public.cancel_join_request(p_group UUID)
+RETURNS VOID
+LANGUAGE sql SECURITY DEFINER SET search_path = public
+AS $$
+  DELETE FROM public.group_join_requests
+  WHERE group_id = p_group AND profile_id = auth.uid() AND status = 'pending';
+$$;
+
+DROP FUNCTION IF EXISTS public.get_group_requests(UUID);
+CREATE FUNCTION public.get_group_requests(p_group UUID)
+RETURNS TABLE (
+  request_id UUID, profile_id UUID, full_name TEXT, career_name TEXT, semester INTEGER,
+  photo TEXT, message TEXT, created_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT public.is_group_admin(p_group) THEN RAISE EXCEPTION 'Solo los administradores ven las solicitudes.'; END IF;
+  RETURN QUERY
+  SELECT r.id, p.id, p.full_name, car.name, p.semester,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = p.id ORDER BY ph.position LIMIT 1),
+         r.message, r.created_at
+  FROM public.group_join_requests r
+  JOIN public.profiles p ON p.id = r.profile_id
+  LEFT JOIN public.careers car ON car.id = p.career_id
+  WHERE r.group_id = p_group AND r.status = 'pending'
+  ORDER BY r.created_at;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.resolve_join_request(UUID, BOOLEAN);
+CREATE FUNCTION public.resolve_join_request(p_request UUID, p_approve BOOLEAN)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE req RECORD;
+BEGIN
+  SELECT * INTO req FROM public.group_join_requests WHERE id = p_request;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La solicitud ya no existe.'; END IF;
+  IF NOT public.is_group_admin(req.group_id) THEN RAISE EXCEPTION 'Solo los administradores pueden responder solicitudes.'; END IF;
+  IF req.status <> 'pending' THEN RAISE EXCEPTION 'Esta solicitud ya fue respondida.'; END IF;
+
+  UPDATE public.group_join_requests
+  SET status = CASE WHEN p_approve THEN 'approved' ELSE 'rejected' END,
+      resolved_by = auth.uid(), resolved_at = NOW()
+  WHERE id = p_request;
+  IF p_approve THEN
+    INSERT INTO public.group_members (group_id, profile_id, role)
+    VALUES (req.group_id, req.profile_id, 'member')
+    ON CONFLICT DO NOTHING;
+  END IF;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.get_group_members(UUID);
+CREATE FUNCTION public.get_group_members(p_group UUID)
+RETURNS TABLE (
+  profile_id UUID, full_name TEXT, career_name TEXT, semester INTEGER, photo TEXT,
+  role TEXT, is_creator BOOLEAN, joined_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT public.is_group_member(p_group) THEN RAISE EXCEPTION 'Solo los miembros ven la lista de miembros.'; END IF;
+  RETURN QUERY
+  SELECT p.id, p.full_name, car.name, p.semester,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = p.id ORDER BY ph.position LIMIT 1),
+         m.role, (g.created_by = p.id), m.joined_at
+  FROM public.group_members m
+  JOIN public.groups g ON g.id = m.group_id
+  JOIN public.profiles p ON p.id = m.profile_id
+  LEFT JOIN public.careers car ON car.id = p.career_id
+  WHERE m.group_id = p_group
+  ORDER BY (g.created_by = p.id) DESC, (m.role = 'admin') DESC, m.joined_at;
+END;
+$$;
+
+-- Solo el creador nombra o quita administradores, y el candidato ya debe ser miembro.
+DROP FUNCTION IF EXISTS public.set_group_admin(UUID, UUID, BOOLEAN);
+CREATE FUNCTION public.set_group_admin(p_group UUID, p_profile UUID, p_make_admin BOOLEAN)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE creator UUID;
+BEGIN
+  SELECT created_by INTO creator FROM public.groups WHERE id = p_group;
+  IF creator IS DISTINCT FROM auth.uid() THEN RAISE EXCEPTION 'Solo el creador puede nombrar administradores.'; END IF;
+  IF p_profile = creator THEN RAISE EXCEPTION 'El creador siempre es administrador.'; END IF;
+  UPDATE public.group_members SET role = CASE WHEN p_make_admin THEN 'admin' ELSE 'member' END
+  WHERE group_id = p_group AND profile_id = p_profile;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Esa persona primero debe unirse al grupo.'; END IF;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.remove_group_member(UUID, UUID);
+CREATE FUNCTION public.remove_group_member(p_group UUID, p_profile UUID)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  creator UUID;
+  target_role TEXT;
+BEGIN
+  IF NOT public.is_group_admin(p_group) THEN RAISE EXCEPTION 'Solo los administradores pueden quitar miembros.'; END IF;
+  SELECT created_by INTO creator FROM public.groups WHERE id = p_group;
+  IF p_profile = creator THEN RAISE EXCEPTION 'No se puede quitar al creador del grupo.'; END IF;
+  IF p_profile = auth.uid() THEN RAISE EXCEPTION 'Para salir usa "Salir del grupo".'; END IF;
+  SELECT role INTO target_role FROM public.group_members WHERE group_id = p_group AND profile_id = p_profile;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Esa persona ya no está en el grupo.'; END IF;
+  IF target_role = 'admin' AND creator <> auth.uid() THEN
+    RAISE EXCEPTION 'Solo el creador puede quitar a otro administrador.';
+  END IF;
+  DELETE FROM public.group_members WHERE group_id = p_group AND profile_id = p_profile;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.leave_group(UUID);
+CREATE FUNCTION public.leave_group(p_group UUID)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.groups WHERE id = p_group AND created_by = auth.uid()) THEN
+    RAISE EXCEPTION 'El creador no puede salir del grupo. Puedes eliminarlo desde su pantalla.';
+  END IF;
+  DELETE FROM public.group_members WHERE group_id = p_group AND profile_id = auth.uid();
+  -- Al salir se borra la solicitud vieja para poder volver a pedir entrada
+  DELETE FROM public.group_join_requests WHERE group_id = p_group AND profile_id = auth.uid();
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.create_group(TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_group(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_group(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.list_groups() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_group_link(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.request_join_group(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_join_request(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_group_requests(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.resolve_join_request(UUID, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_group_members(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.set_group_admin(UUID, UUID, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.remove_group_member(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.leave_group(UUID) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.create_group(TEXT, TEXT, TEXT, TEXT, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.update_group(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.delete_group(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.list_groups() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_group_link(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.request_join_group(UUID, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.cancel_join_request(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_group_requests(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.resolve_join_request(UUID, BOOLEAN) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_group_members(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.set_group_admin(UUID, UUID, BOOLEAN) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.remove_group_member(UUID, UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.leave_group(UUID) FROM anon;
+
+
 -- ==============================================================================
 -- 3. CATÁLOGO DE LA UAA (obligatorio)
 -- ==============================================================================
