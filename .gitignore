@@ -51,3 +51,7 @@ supabase/.branches
 # `npx impeccable install` o desde https://github.com/pbakaus/impeccable)
 .impeccable/
 .claude/
+
+# Documentos de diseño para Impeccable (solo locales)
+DESIGN.md
+PRODUCT.md

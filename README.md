@@ -1,27 +1,39 @@
-# UniLink 🎓
+# UniLink
 
-> **App web para conectar estudiantes universitarios verificados de forma segura según intereses reales.**  
-> Encuentra compañeros de estudio, tutorías, amistad o pareja en tu campus.
+> **App web para conectar estudiantes universitarios verificados de forma segura según intereses reales.**
+> Encuentra compañeros de estudio, amistad o pareja en tu campus.
 
 ---
 
-## 🚀 Stack Tecnológico
+## Qué hace
+
+- **Solo estudiantes verificados**: el registro solo acepta correos institucionales (`@edu.uaa.mx`, `@alumnos.uaa.mx`). La base de datos rechaza cualquier otro dominio.
+- **Tres modos de conexión**: Estudio, Amistad y Pareja. Cada quien activa los que quiera y elige a quién quiere conocer en cada uno (Mujeres, Hombres o Todos). El filtro es mutuo: solo ves a quien también quiere conocer a alguien como tú.
+- **Descubrir**: tarjetas que se deslizan a la derecha ("Me interesa") o a la izquierda ("Pasar"), con un porcentaje de afinidad calculado a partir de materias, intereses, horario libre, carrera, campus y actividad reciente.
+- **Matches y chat en tiempo real**: cuando el interés es mutuo se crea el match y se abre el chat. Incluye deshacer match, bloquear y reportar, y moderación automática de mensajes.
+- **Perfil**: hasta 6 fotos, biografía, Instagram (solo lo ven tus matches), intereses, materias y horario libre.
+- **Modo día y noche**.
+
+---
+
+## Stack Tecnológico
 
 - **Frontend**: React 18 + TypeScript + Vite + React Router v7
 - **Estilos & Animaciones**: Tailwind CSS v4 + Framer Motion + Lucide React
+- **Tipografía**: Fraunces (títulos y nombres) + Plus Jakarta Sans (texto)
 - **Estado & Datos**: Zustand (sesión / tema) + TanStack Query v5 (servidor)
 - **Formularios & Validación**: React Hook Form + Zod
-- **Backend (BaaS)**: Supabase (Auth con verificación institucional, PostgreSQL con RLS, Realtime, Storage, Edge Functions)
+- **Backend (BaaS)**: Supabase (Auth con verificación institucional, PostgreSQL con RLS, Realtime, Storage)
 - **Testing**: Vitest
 
 ---
 
-## 📦 Instalación y Puesta en Marcha
+## Instalación y Puesta en Marcha
 
 ### 1. Clonar e instalar dependencias (requiere Node.js 20.19 o superior)
 ```bash
-git clone <url-del-repo>
-cd uniLink
+git clone https://github.com/jdmonteroa/UniLink.git
+cd UniLink
 npm install
 ```
 
@@ -36,7 +48,7 @@ VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
 VITE_SUPABASE_ANON_KEY=tu-anon-public-key
 VITE_APP_URL=http://localhost:5173
 ```
-> ⚠️ **REGLA DE SEGURIDAD**: NUNCA coloques la `service_role key` en el frontend ni en archivos `.env` del cliente.
+> ⚠️ **REGLA DE SEGURIDAD**: NUNCA coloques la `service_role key` en el frontend ni en archivos `.env` del cliente. El archivo `.env` está en `.gitignore` y no debe subirse al repositorio.
 
 ### 3. Ejecutar en desarrollo
 ```bash
@@ -56,13 +68,16 @@ npm run build
 
 ---
 
-## 🗄️ Configuración de Supabase
+## Configuración de Supabase
 
 En el **SQL Editor** de tu proyecto de Supabase corre, en este orden:
 
 1. `supabase/COMPLETE_SETUP.sql` *(solo si es un proyecto nuevo; si ya lo corriste, sáltalo)*
-2. `supabase/migrations/007_reparacion_onboarding_fotos_chat.sql` **(obligatorio)** — crea las políticas RLS que faltaban, el bucket `avatars` para fotos, el matching, las funciones del chat y la moderación. Se puede correr varias veces sin romper nada.
-3. `supabase/seed.sql` — carreras, materias, intereses y 10 estudiantes de prueba.
+2. `supabase/migrations/007_reparacion_onboarding_fotos_chat.sql` **(obligatorio)**: crea las políticas RLS que faltaban, el bucket `avatars` para fotos, el matching, las funciones del chat y la moderación.
+3. `supabase/migrations/008_preferencia_genero_todos_los_modos.sql` **(obligatorio)**: hace que la preferencia "Quiero conocer" (Mujeres, Hombres o Todos) filtre en los tres modos y en ambos sentidos.
+4. `supabase/seed.sql`: carreras, materias, intereses y 10 estudiantes de prueba.
+
+Las migraciones 007 y 008 se pueden correr varias veces sin romper nada.
 
 Después, en el dashboard:
 
@@ -72,30 +87,43 @@ Después, en el dashboard:
 ### Cuentas de prueba
 Los 10 perfiles del seed pueden iniciar sesión con la contraseña `UniLinkDemo2026!` (ej. `sofia.alvarez@edu.uaa.mx`). Sirven para probar el chat desde el otro lado. Al final de `seed.sql` hay un bloque opcional para que todos te den "Me interesa" y así obtener matches al instante.
 
+---
+
+## Cómo funciona
+
+La app no tiene un servidor propio: el frontend habla directo con Supabase usando solo la clave pública (`anon key`). La seguridad vive en las políticas RLS de cada tabla.
+
+- **Registro**: un trigger (`handle_new_user`) valida el dominio del correo y crea el perfil y los modos de conexión.
+- **Descubrir**: la función `get_recommendations` filtra (misma universidad, modo activo, preferencias mutuas, sin bloqueos) y calcula la afinidad.
+- **Deslizar**: cada decisión se guarda en `swipes`. Un trigger (`handle_swipe_action`) crea el match y la conversación cuando el "Me interesa" es mutuo, y limita a 25 "Me interesa" al día en cuentas gratuitas.
+- **Chat**: los mensajes se guardan en `messages` y llegan por Realtime. Un trigger (`moderate_message`) frena el spam y descarta mensajes con términos prohibidos.
+- **Otras funciones**: `get_my_matches`, `unmatch`, `block_user`, `mark_conversation_read` y `ensure_my_profile`.
+
 ### Fotos
-Las fotos se comprimen en el navegador (máx. 1440 px, JPEG) y se suben a `avatars/<tu-id>/<archivo>.jpg`. En `profile_photos.storage_path` se guarda esa ruta; la app la convierte en URL pública. Solo el dueño puede subir o borrar en su carpeta.
-
-### Modo demo
-Si el `.env` no tiene credenciales, la app ofrece "Probar en modo demo": todo funciona en memoria y no se guarda nada.
+Las fotos se comprimen en el navegador (máx. 1440 px, JPEG) y se suben al bucket `avatars` en `avatars/<tu-id>/<archivo>.jpg`. La base de datos no guarda la imagen, solo su ruta en `profile_photos.storage_path` junto con su posición (0 = foto principal, máximo 6). La app convierte esa ruta en una URL pública para mostrarla. Solo el dueño puede subir o borrar archivos en su carpeta.
 
 ---
 
-## 🎨 Propuestas de Diseño (Fase 1)
+## Estructura del proyecto
 
-En la Fase 1, la aplicación incluye una interfaz interactiva para comparar las dos direcciones de diseño:
-- **Propuesta A: "Campus Pulse"**: Digital Vanguard / Neo-Brutalist Soft (Outfit + Plus Jakarta Sans, bordes orgánicos `rounded-3xl`, glow por modo, alta energía juvenil).
-- **Propuesta B: "Alma Máter"**: Editorial Campus / Warm Prestige (Instrument Serif + Plus Jakarta Sans, bordes estructurados `rounded-xl`, sensación de anuario universitario y elegancia académica).
-
-Ambas propuestas soportan Modo Claro / Oscuro y los 3 modos de conexión:
-- 📚 **Modo Estudio** (Azul Cobalto / Sky)
-- 🤝 **Modo Amistad** (Ámbar / Naranja)
-- ❤️ **Modo Pareja** (Crimson / Magenta)
+```
+src/
+  app/          App, rutas y guardia de sesión
+  components/   Componentes compartidos (fotos, diálogos, logo, selector "Quiero conocer")
+  features/     Pantallas por función: auth, onboarding, discover, chat, profile, theme
+  lib/          Cliente de Supabase, fotos, catálogo y utilidades
+  styles/       Tokens de diseño (colores, tipografía) en index.css
+supabase/
+  migrations/   Migraciones SQL en orden
+  seed.sql      Datos de prueba
+```
 
 ---
 
-## 🚢 Despliegue en Vercel / Netlify
+## Despliegue en Vercel / Netlify
 
 1. Conecta tu repositorio de GitHub a Vercel o Netlify.
 2. Configura el comando de build: `npm run build`
 3. Directorio de salida: `dist`
 4. Añade las variables de entorno en la configuración del proyecto: `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY`.
+5. Agrega el dominio de producción en Supabase (**Authentication → URL Configuration**).
