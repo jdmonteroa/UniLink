@@ -1,7 +1,7 @@
 import { supabase, friendlyError } from '@/lib/supabaseClient';
 
 export const AVATAR_BUCKET = 'avatars';
-export const MAX_PHOTOS = 6;
+export const MAX_PHOTOS = 2;
 const MAX_INPUT_BYTES = 20 * 1024 * 1024; // lo que aceptamos del celular antes de comprimir
 const MAX_SIDE = 1440; // px del lado más largo tras comprimir
 const JPEG_QUALITY = 0.85;

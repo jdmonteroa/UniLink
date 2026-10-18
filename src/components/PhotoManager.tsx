@@ -78,7 +78,7 @@ export const PhotoManager: React.FC = () => {
 
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {photos.map((p, idx) => (
           <div key={p} className={`${tileBase} group bg-haze-100 dark:bg-ink-800`}>
             <img src={photoUrl(p)} alt={`Foto ${idx + 1}`} className="w-full h-full object-cover" loading="lazy" />

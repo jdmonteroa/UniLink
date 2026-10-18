@@ -524,7 +524,7 @@ export const OnboardingFlow: React.FC = () => {
             {/* PASO 6: Fotos y bio */}
             {step === 6 && (
               <>
-                <StepHeader title={<>Tu <Highlight>mejor</Highlight> ángulo</>} subtitle="Sube entre 1 y 6 fotos desde tu galería o cámara" />
+                <StepHeader title={<>Tu <Highlight>mejor</Highlight> ángulo</>} subtitle="Sube 1 o 2 fotos desde tu galería o cámara" />
                 <PhotoManager />
                 <div>
                   <label className={`${labelCls} flex justify-between`} htmlFor="ob-bio">

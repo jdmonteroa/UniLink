@@ -95,10 +95,17 @@ CREATE TABLE IF NOT EXISTS public.profile_photos (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     profile_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     storage_path TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK (position >= 0 AND position < 6),
+    position INTEGER NOT NULL CHECK (position >= 0 AND position < 2),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(profile_id, position)
 );
+
+-- Máximo 2 fotos por perfil (posiciones 0 y 1). En bases creadas antes con
+-- límite de 6, se reemplaza la regla; NOT VALID respeta las fotos que ya existen
+-- y solo bloquea las nuevas fuera de rango.
+ALTER TABLE public.profile_photos DROP CONSTRAINT IF EXISTS profile_photos_position_check;
+ALTER TABLE public.profile_photos ADD CONSTRAINT profile_photos_position_check
+    CHECK (position >= 0 AND position < 2) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS public.profile_subjects (
     profile_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
