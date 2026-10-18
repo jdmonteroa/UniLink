@@ -531,12 +531,9 @@ USING (university_id = public.get_my_university_id());
 CREATE POLICY "Crear grupo de estudio" ON public.study_groups FOR INSERT TO authenticated
 WITH CHECK (auth.uid() = created_by AND university_id = public.get_my_university_id());
 
+-- Eventos: las políticas viejas se eliminan; las nuevas (con moderación) están en la sección 2.13.
 DROP POLICY IF EXISTS "Ver eventos de mi universidad" ON public.events;
 DROP POLICY IF EXISTS "Crear evento" ON public.events;
-CREATE POLICY "Ver eventos de mi universidad" ON public.events FOR SELECT TO authenticated
-USING (university_id = public.get_my_university_id());
-CREATE POLICY "Crear evento" ON public.events FOR INSERT TO authenticated
-WITH CHECK (auth.uid() = created_by AND university_id = public.get_my_university_id());
 
 DROP POLICY IF EXISTS "Ver tutorias" ON public.tutoring_offers;
 DROP POLICY IF EXISTS "Gestionar mis tutorias" ON public.tutoring_offers;
@@ -560,6 +557,7 @@ BEGIN
     NEW.university_id := OLD.university_id;
     NEW.is_photo_verified := OLD.is_photo_verified;
     NEW.is_suspended := OLD.is_suspended;
+    NEW.event_ban_until := OLD.event_ban_until;
     NEW.suspended_until := OLD.suspended_until;
   END IF;
   RETURN NEW;
@@ -1659,6 +1657,480 @@ REVOKE EXECUTE ON FUNCTION public.get_group_members(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.set_group_admin(UUID, UUID, BOOLEAN) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.remove_group_member(UUID, UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.leave_group(UUID) FROM anon;
+
+
+-- ------------------------------------------------------------------------------
+-- 2.13 EVENTOS Y AVISOS CON MODERACIÓN
+-- Cualquiera puede mandar un evento o aviso (texto, imagen o ambos), pero NADA se
+-- publica hasta que un moderador/administrador lo aprueba. Los filtros solo
+-- ANOTAN el resultado (texto: lista de términos; imagen: Google SafeSearch) para
+-- que la persona que modera decida con contexto: aprobar, rechazar o rechazar y
+-- sancionar. Todas las escrituras pasan por funciones; las tablas son de lectura.
+--
+-- Para dar permisos de moderación a alguien (una sola vez, desde el SQL Editor):
+--   UPDATE public.profiles SET role = 'moderator' WHERE id = '<uuid del usuario>';
+--   (usa 'admin' si además debe poder dar bloqueos permanentes)
+--
+-- Análisis de imagen (SafeSearch): ver el contrato en el README, sección
+-- "Moderación de eventos". La función set_event_image_scan() la llama una Edge Function.
+-- ------------------------------------------------------------------------------
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS event_ban_until TIMESTAMPTZ;
+
+ALTER TABLE public.events ALTER COLUMN location DROP NOT NULL;
+ALTER TABLE public.events ALTER COLUMN start_time DROP NOT NULL;
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'otro';
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS image_path TEXT;
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS text_scan JSONB;
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS image_scan JSONB;
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS reviewed_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL;
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS review_note TEXT;
+ALTER TABLE public.events ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '14 days');
+
+ALTER TABLE public.events DROP CONSTRAINT IF EXISTS events_status_check;
+ALTER TABLE public.events ADD CONSTRAINT events_status_check CHECK (status IN ('pending', 'approved', 'rejected'));
+ALTER TABLE public.events DROP CONSTRAINT IF EXISTS events_category_check;
+ALTER TABLE public.events ADD CONSTRAINT events_category_check
+  CHECK (category IN ('mercadito', 'reunion', 'academico', 'cultural', 'deportivo', 'aviso', 'otro'));
+
+-- Las sanciones por eventos se registran junto a las demás acciones de moderación
+ALTER TABLE public.moderation_actions DROP CONSTRAINT IF EXISTS moderation_actions_action_check;
+ALTER TABLE public.moderation_actions ADD CONSTRAINT moderation_actions_action_check
+  CHECK (action IN ('warn', 'suspend', 'ban', 'dismiss', 'event_ban'));
+ALTER TABLE public.moderation_actions ADD COLUMN IF NOT EXISTS event_id UUID REFERENCES public.events(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS public.event_reports (
+    event_id UUID NOT NULL REFERENCES public.events(id) ON DELETE CASCADE,
+    reporter_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL CHECK (reason IN ('offensive', 'sexual', 'spam', 'false', 'other')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY(event_id, reporter_id)
+);
+
+-- Lista de términos para el filtro de texto (aparte de la del chat para no cambiarlo)
+CREATE TABLE IF NOT EXISTS public.content_filter_terms (
+    term TEXT PRIMARY KEY,
+    category TEXT NOT NULL CHECK (category IN ('insult', 'profanity', 'sexual', 'violence', 'spam')),
+    severity TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low', 'medium', 'high'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_feed ON public.events(university_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_events_author ON public.events(created_by, created_at DESC);
+
+ALTER TABLE public.event_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.content_filter_terms ENABLE ROW LEVEL SECURITY;
+
+-- Solo lectura: lo publicado de mi universidad, lo mío, o todo si soy moderador
+DROP POLICY IF EXISTS "Ver eventos aprobados, propios o como moderador" ON public.events;
+CREATE POLICY "Ver eventos aprobados, propios o como moderador" ON public.events FOR SELECT TO authenticated
+USING (
+  university_id = public.get_my_university_id()
+  AND (
+    (status = 'approved' AND expires_at > NOW())
+    OR created_by = auth.uid()
+    OR public.is_moderator_or_admin()
+  )
+);
+
+-- Términos: sin políticas = solo las funciones (SECURITY DEFINER) los leen.
+-- Reportes de eventos: solo los ve quien modera.
+DROP POLICY IF EXISTS "Moderadores ven reportes de eventos" ON public.event_reports;
+CREATE POLICY "Moderadores ven reportes de eventos" ON public.event_reports FOR SELECT TO authenticated
+USING (public.is_moderator_or_admin());
+
+-- Imágenes de eventos: bucket público con rutas imposibles de adivinar. Una imagen
+-- pendiente solo se conoce por la fila del evento, que no se ve hasta aprobarse.
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('event-images', 'event-images', TRUE, 5242880, ARRAY['image/jpeg', 'image/png', 'image/webp'])
+ON CONFLICT (id) DO UPDATE
+SET public = TRUE,
+    file_size_limit = EXCLUDED.file_size_limit,
+    allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+DROP POLICY IF EXISTS "event-images: lectura" ON storage.objects;
+DROP POLICY IF EXISTS "event-images: subir propias" ON storage.objects;
+DROP POLICY IF EXISTS "event-images: borrar propias o moderar" ON storage.objects;
+CREATE POLICY "event-images: lectura" ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id = 'event-images');
+CREATE POLICY "event-images: subir propias" ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id = 'event-images' AND (storage.foldername(name))[1] = auth.uid()::TEXT);
+CREATE POLICY "event-images: borrar propias o moderar" ON storage.objects FOR DELETE TO authenticated
+USING (
+  bucket_id = 'event-images'
+  AND ((storage.foldername(name))[1] = auth.uid()::TEXT OR public.is_moderator_or_admin())
+);
+
+-- ---- Filtro de texto ----------------------------------------------------------
+-- Normaliza para que "PÚT4", "puuuta" o "p.u.t.a" no se escapen tan fácil:
+-- minúsculas, sin acentos, números parecidos a letras y letras repetidas colapsadas.
+CREATE OR REPLACE FUNCTION public.normalize_filter_text(t TEXT)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT regexp_replace(
+    translate(lower(COALESCE(t, '')), 'áàäâéèëêíìïîóòöôúùüûñ0134578@$', 'aaaaeeeeiiiioooouuuunoieastbas'),
+    '(.)\1+', '\1', 'g'
+  );
+$$;
+
+INSERT INTO public.content_filter_terms (term, category, severity) VALUES
+  -- insultos
+  ('idiota', 'insult', 'medium'), ('imbécil', 'insult', 'medium'), ('estúpido', 'insult', 'medium'),
+  ('estúpida', 'insult', 'medium'), ('pendejo', 'insult', 'high'), ('pendeja', 'insult', 'high'),
+  ('cabrón', 'insult', 'medium'), ('cabrona', 'insult', 'medium'), ('culero', 'insult', 'medium'),
+  ('culera', 'insult', 'medium'), ('mamón', 'insult', 'low'), ('mamona', 'insult', 'low'),
+  ('inútil', 'insult', 'low'), ('retrasado', 'insult', 'high'), ('retrasada', 'insult', 'high'),
+  ('maricón', 'insult', 'high'), ('puto', 'insult', 'high'), ('putos', 'insult', 'high'),
+  ('puta', 'insult', 'high'), ('putas', 'insult', 'high'), ('zorra', 'insult', 'high'),
+  ('hdp', 'insult', 'high'), ('hijo de puta', 'insult', 'high'),
+  ('hijo de tu madre', 'insult', 'high'), ('asqueroso', 'insult', 'low'),
+  -- groserías
+  ('chingar', 'profanity', 'medium'), ('chingada', 'profanity', 'medium'), ('chingado', 'profanity', 'medium'),
+  ('chinga tu madre', 'profanity', 'high'), ('chingatumadre', 'profanity', 'high'),
+  ('verga', 'profanity', 'medium'), ('vete a la verga', 'profanity', 'high'), ('vales verga', 'profanity', 'high'),
+  ('mierda', 'profanity', 'low'), ('joder', 'profanity', 'low'), ('carajo', 'profanity', 'low'),
+  ('pinche', 'profanity', 'low'),
+  -- contenido sexual
+  ('sexo', 'sexual', 'medium'), ('sexual', 'sexual', 'low'), ('porno', 'sexual', 'high'),
+  ('pornografía', 'sexual', 'high'), ('nudes', 'sexual', 'high'), ('nude', 'sexual', 'high'),
+  ('manda pack', 'sexual', 'high'), ('pasa pack', 'sexual', 'high'),
+  ('onlyfans', 'sexual', 'high'), ('follar', 'sexual', 'high'), ('coger', 'sexual', 'medium'),
+  ('tetas', 'sexual', 'high'), ('nalgas', 'sexual', 'medium'), ('pene', 'sexual', 'high'),
+  ('vagina', 'sexual', 'medium'), ('masturbación', 'sexual', 'high'), ('orgía', 'sexual', 'high'),
+  ('desnudo', 'sexual', 'medium'), ('desnuda', 'sexual', 'medium'), ('erótico', 'sexual', 'medium'),
+  ('escort', 'sexual', 'high'), ('sugar daddy', 'sexual', 'high'), ('sugar baby', 'sexual', 'high'),
+  -- violencia y amenazas
+  ('te voy a matar', 'violence', 'high'), ('mátate', 'violence', 'high'), ('suicídate', 'violence', 'high'),
+  ('te voy a golpear', 'violence', 'high'), ('múerete', 'violence', 'high'), ('matar', 'violence', 'low'),
+  -- spam y estafas
+  ('gana dinero', 'spam', 'medium'), ('dinero fácil', 'spam', 'medium'), ('inversión segura', 'spam', 'medium'),
+  ('casino', 'spam', 'medium'), ('criptomonedas', 'spam', 'low'), ('bitcoin', 'spam', 'low'),
+  ('apuestas', 'spam', 'low'), ('click aquí', 'spam', 'low')
+ON CONFLICT (term) DO NOTHING;
+
+-- Devuelve {"verdict": "clean|review|flagged", "hits": [{term, category, severity}]}
+--   flagged = al menos un término grave o 2+ medios; review = cualquier coincidencia.
+-- Es informativo: nunca publica ni rechaza por sí solo.
+CREATE OR REPLACE FUNCTION public.scan_text(p_text TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  norm TEXT := ' ' || public.normalize_filter_text(p_text) || ' ';
+  hits JSONB := '[]'::JSONB;
+  rec RECORD;
+  highs INTEGER := 0;
+  meds INTEGER := 0;
+  verdict TEXT := 'clean';
+BEGIN
+  FOR rec IN SELECT term, category, severity FROM public.content_filter_terms
+             WHERE char_length(public.normalize_filter_text(term)) >= 3 -- evita términos que al normalizar quedan en 1-2 letras
+  LOOP
+    IF norm ~ ('(^|[^a-z0-9])'
+               || regexp_replace(public.normalize_filter_text(rec.term), '([.*+?^${}()|\[\]\\])', '\\\1', 'g')
+               || '($|[^a-z0-9])') THEN
+      hits := hits || jsonb_build_array(jsonb_build_object('term', rec.term, 'category', rec.category, 'severity', rec.severity));
+      IF rec.severity = 'high' THEN highs := highs + 1;
+      ELSIF rec.severity = 'medium' THEN meds := meds + 1;
+      END IF;
+    END IF;
+  END LOOP;
+
+  IF lower(COALESCE(p_text, '')) ~ '(https?://|www\.)' THEN
+    hits := hits || jsonb_build_array(jsonb_build_object('term', 'enlace', 'category', 'link', 'severity', 'low'));
+  END IF;
+
+  IF highs > 0 OR meds >= 2 THEN verdict := 'flagged';
+  ELSIF jsonb_array_length(hits) > 0 THEN verdict := 'review';
+  END IF;
+  RETURN jsonb_build_object('verdict', verdict, 'hits', hits);
+END;
+$$;
+
+-- ---- Enviar, ver, reportar y borrar -------------------------------------------
+DROP FUNCTION IF EXISTS public.submit_event(TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT);
+CREATE FUNCTION public.submit_event(
+  p_title TEXT, p_description TEXT, p_category TEXT, p_location TEXT, p_start TIMESTAMPTZ, p_image_path TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  prof RECORD;
+  ttl TEXT := btrim(COALESCE(p_title, ''));
+  dsc TEXT := NULLIF(btrim(COALESCE(p_description, '')), '');
+  loc TEXT := NULLIF(btrim(COALESCE(p_location, '')), '');
+  new_id UUID;
+BEGIN
+  IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión para publicar.'; END IF;
+  SELECT university_id, onboarding_completed, is_suspended, suspended_until, event_ban_until INTO prof
+  FROM public.profiles WHERE id = me;
+  IF prof.university_id IS NULL OR NOT prof.onboarding_completed THEN
+    RAISE EXCEPTION 'Completa tu perfil para publicar.';
+  END IF;
+  IF prof.is_suspended AND (prof.suspended_until IS NULL OR prof.suspended_until > NOW()) THEN
+    RAISE EXCEPTION 'Tu cuenta está suspendida y no puede publicar por ahora.';
+  END IF;
+  IF prof.event_ban_until IS NOT NULL AND prof.event_ban_until > NOW() THEN
+    RAISE EXCEPTION 'No puedes publicar eventos hasta el %.', to_char(prof.event_ban_until AT TIME ZONE 'America/Mexico_City', 'DD/MM/YYYY');
+  END IF;
+
+  IF char_length(ttl) < 3 OR char_length(ttl) > 80 THEN RAISE EXCEPTION 'El título debe tener entre 3 y 80 caracteres.'; END IF;
+  IF dsc IS NOT NULL AND char_length(dsc) > 1000 THEN RAISE EXCEPTION 'El texto puede tener máximo 1000 caracteres.'; END IF;
+  IF loc IS NOT NULL AND char_length(loc) > 120 THEN RAISE EXCEPTION 'El lugar puede tener máximo 120 caracteres.'; END IF;
+  IF dsc IS NULL AND p_image_path IS NULL THEN RAISE EXCEPTION 'Agrega un texto, una imagen o ambos.'; END IF;
+  IF p_category NOT IN ('mercadito', 'reunion', 'academico', 'cultural', 'deportivo', 'aviso', 'otro') THEN
+    RAISE EXCEPTION 'Elige una categoría válida.';
+  END IF;
+  IF p_start IS NOT NULL AND p_start < NOW() THEN RAISE EXCEPTION 'La fecha del evento ya pasó.'; END IF;
+  IF p_image_path IS NOT NULL AND p_image_path NOT LIKE me::TEXT || '/%' THEN RAISE EXCEPTION 'Imagen no válida.'; END IF;
+  IF (SELECT COUNT(*) FROM public.events
+      WHERE created_by = me AND status IN ('pending', 'approved') AND expires_at > NOW()) >= 3 THEN
+    RAISE EXCEPTION 'Ya tienes 3 publicaciones activas o en revisión. Espera a que se resuelvan o elimina una.';
+  END IF;
+
+  INSERT INTO public.events (
+    university_id, title, description, category, location, start_time, image_path,
+    status, text_scan, image_scan, created_by, expires_at
+  ) VALUES (
+    prof.university_id, ttl, dsc, p_category, loc, p_start, p_image_path,
+    'pending',
+    public.scan_text(ttl || ' ' || COALESCE(dsc, '') || ' ' || COALESCE(loc, '')),
+    CASE WHEN p_image_path IS NULL THEN NULL ELSE jsonb_build_object('status', 'pending') END,
+    me,
+    COALESCE(p_start + INTERVAL '6 hours', NOW() + INTERVAL '14 days')
+  ) RETURNING id INTO new_id;
+  RETURN new_id;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.list_events();
+CREATE FUNCTION public.list_events()
+RETURNS TABLE (
+  id UUID, title TEXT, description TEXT, category TEXT, location TEXT, start_time TIMESTAMPTZ,
+  image_path TEXT, created_at TIMESTAMPTZ, author_name TEXT, is_mine BOOLEAN
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+DECLARE me UUID := auth.uid();
+BEGIN
+  IF me IS NULL THEN RETURN; END IF;
+  RETURN QUERY
+  SELECT e.id, e.title, e.description, e.category, e.location, e.start_time,
+         e.image_path, e.created_at, p.full_name, (e.created_by = me)
+  FROM public.events e
+  JOIN public.profiles p ON p.id = e.created_by
+  WHERE e.university_id = public.get_my_university_id()
+    AND e.status = 'approved' AND e.expires_at > NOW()
+  ORDER BY (e.start_time IS NULL), e.start_time, e.created_at DESC;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.list_my_events();
+CREATE FUNCTION public.list_my_events()
+RETURNS TABLE (
+  id UUID, title TEXT, description TEXT, category TEXT, location TEXT, start_time TIMESTAMPTZ,
+  image_path TEXT, status TEXT, review_note TEXT, created_at TIMESTAMPTZ, expires_at TIMESTAMPTZ
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT e.id, e.title, e.description, e.category, e.location, e.start_time,
+         e.image_path, e.status, e.review_note, e.created_at, e.expires_at
+  FROM public.events e
+  WHERE e.created_by = auth.uid()
+  ORDER BY e.created_at DESC
+  LIMIT 30;
+$$;
+
+-- Devuelve la ruta de la imagen para que la app borre el archivo.
+DROP FUNCTION IF EXISTS public.delete_event(UUID);
+CREATE FUNCTION public.delete_event(p_event UUID)
+RETURNS TEXT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE ev RECORD;
+BEGIN
+  SELECT created_by, university_id, image_path INTO ev FROM public.events WHERE id = p_event;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Esa publicación ya no existe.'; END IF;
+  IF ev.created_by <> auth.uid()
+     AND NOT (public.is_moderator_or_admin() AND ev.university_id = public.get_my_university_id()) THEN
+    RAISE EXCEPTION 'No puedes eliminar esta publicación.';
+  END IF;
+  DELETE FROM public.events WHERE id = p_event;
+  RETURN ev.image_path;
+END;
+$$;
+
+-- Con 2 reportes de personas distintas, un evento aprobado vuelve a revisión.
+DROP FUNCTION IF EXISTS public.report_event(UUID, TEXT);
+CREATE FUNCTION public.report_event(p_event UUID, p_reason TEXT)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  ev RECORD;
+BEGIN
+  IF p_reason NOT IN ('offensive', 'sexual', 'spam', 'false', 'other') THEN RAISE EXCEPTION 'Motivo no válido.'; END IF;
+  SELECT created_by, status INTO ev FROM public.events
+  WHERE id = p_event AND university_id = public.get_my_university_id();
+  IF NOT FOUND OR ev.status <> 'approved' THEN RAISE EXCEPTION 'Esa publicación ya no está disponible.'; END IF;
+  IF ev.created_by = me THEN RAISE EXCEPTION 'No puedes reportar tu propia publicación.'; END IF;
+
+  INSERT INTO public.event_reports (event_id, reporter_id, reason) VALUES (p_event, me, p_reason)
+  ON CONFLICT (event_id, reporter_id) DO NOTHING;
+
+  IF (SELECT COUNT(*) FROM public.event_reports WHERE event_id = p_event) >= 2 THEN
+    UPDATE public.events SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL, review_note = NULL
+    WHERE id = p_event AND status = 'approved';
+  END IF;
+END;
+$$;
+
+-- ---- Moderación ---------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.list_moderation_queue();
+CREATE FUNCTION public.list_moderation_queue()
+RETURNS TABLE (
+  id UUID, title TEXT, description TEXT, category TEXT, location TEXT, start_time TIMESTAMPTZ,
+  image_path TEXT, created_at TIMESTAMPTZ,
+  author_id UUID, author_name TEXT, author_career TEXT, author_semester INTEGER, author_photo TEXT,
+  text_scan JSONB, image_scan JSONB,
+  report_count INTEGER, report_reasons JSONB,
+  prior_rejections INTEGER, prior_sanctions INTEGER, author_ban_until TIMESTAMPTZ
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT public.is_moderator_or_admin() THEN RAISE EXCEPTION 'Solo moderadores pueden ver la cola.'; END IF;
+  RETURN QUERY
+  SELECT e.id, e.title, e.description, e.category, e.location, e.start_time,
+         e.image_path, e.created_at,
+         p.id, p.full_name, car.name, p.semester,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = p.id ORDER BY ph.position LIMIT 1),
+         e.text_scan, e.image_scan,
+         (SELECT COUNT(*) FROM public.event_reports r WHERE r.event_id = e.id)::INTEGER,
+         COALESCE((SELECT jsonb_agg(r.reason) FROM public.event_reports r WHERE r.event_id = e.id), '[]'::JSONB),
+         (SELECT COUNT(*) FROM public.events x WHERE x.created_by = p.id AND x.status = 'rejected')::INTEGER,
+         (SELECT COUNT(*) FROM public.moderation_actions a WHERE a.target_user_id = p.id AND a.action <> 'dismiss')::INTEGER,
+         p.event_ban_until
+  FROM public.events e
+  JOIN public.profiles p ON p.id = e.created_by
+  LEFT JOIN public.careers car ON car.id = p.career_id
+  WHERE e.status = 'pending'
+    AND e.university_id = public.get_my_university_id()
+    AND e.expires_at > NOW()
+  ORDER BY
+    (SELECT COUNT(*) FROM public.event_reports r WHERE r.event_id = e.id) DESC,
+    CASE e.text_scan->>'verdict' WHEN 'flagged' THEN 0 WHEN 'review' THEN 1 ELSE 2 END,
+    e.created_at;
+END;
+$$;
+
+-- p_decision: 'approve' | 'reject'.  Sanción (solo con 'reject'):
+--   warn (aviso), event_ban (no publicar N días), suspend (cuenta suspendida N días),
+--   ban (suspensión permanente, solo administradores).
+-- Devuelve la ruta de la imagen cuando se rechaza, para que la app borre el archivo.
+DROP FUNCTION IF EXISTS public.review_event(UUID, TEXT, TEXT, TEXT, INTEGER);
+CREATE FUNCTION public.review_event(
+  p_event UUID, p_decision TEXT, p_note TEXT DEFAULT NULL, p_sanction TEXT DEFAULT NULL, p_days INTEGER DEFAULT NULL
+)
+RETURNS TEXT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  my_role TEXT;
+  ev RECORD;
+  note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
+BEGIN
+  SELECT role INTO my_role FROM public.profiles WHERE id = me;
+  IF my_role NOT IN ('moderator', 'admin') THEN RAISE EXCEPTION 'Solo moderadores pueden revisar publicaciones.'; END IF;
+
+  SELECT id, created_by, university_id, status, image_path INTO ev FROM public.events WHERE id = p_event;
+  IF NOT FOUND OR ev.university_id <> public.get_my_university_id() THEN RAISE EXCEPTION 'Esa publicación ya no existe.'; END IF;
+  IF ev.status <> 'pending' THEN RAISE EXCEPTION 'Esta publicación ya fue revisada.'; END IF;
+  IF ev.created_by = me AND my_role <> 'admin' THEN RAISE EXCEPTION 'Otra persona debe revisar tu publicación.'; END IF;
+  IF p_decision NOT IN ('approve', 'reject') THEN RAISE EXCEPTION 'Decisión no válida.'; END IF;
+
+  IF p_decision = 'approve' THEN
+    IF p_sanction IS NOT NULL THEN RAISE EXCEPTION 'Para sancionar primero rechaza la publicación.'; END IF;
+    UPDATE public.events SET status = 'approved', reviewed_by = me, reviewed_at = NOW(), review_note = note WHERE id = p_event;
+    DELETE FROM public.event_reports WHERE event_id = p_event; -- los reportes quedan resueltos
+    RETURN NULL;
+  END IF;
+
+  IF note IS NULL OR char_length(note) < 3 THEN RAISE EXCEPTION 'Escribe el motivo del rechazo (lo verá quien publicó).'; END IF;
+  IF char_length(note) > 300 THEN RAISE EXCEPTION 'El motivo puede tener máximo 300 caracteres.'; END IF;
+
+  IF p_sanction IS NOT NULL THEN
+    IF p_sanction NOT IN ('warn', 'event_ban', 'suspend', 'ban') THEN RAISE EXCEPTION 'Sanción no válida.'; END IF;
+    IF p_sanction = 'ban' AND my_role <> 'admin' THEN RAISE EXCEPTION 'Solo un administrador puede dar un bloqueo permanente.'; END IF;
+    IF p_sanction IN ('event_ban', 'suspend') AND (p_days IS NULL OR p_days < 1 OR p_days > 365) THEN
+      RAISE EXCEPTION 'Indica la duración en días (1 a 365).';
+    END IF;
+    IF ev.created_by = me THEN RAISE EXCEPTION 'No puedes sancionarte a ti mismo.'; END IF;
+
+    IF p_sanction = 'event_ban' THEN
+      UPDATE public.profiles SET event_ban_until = NOW() + make_interval(days => p_days) WHERE id = ev.created_by;
+    ELSIF p_sanction = 'suspend' THEN
+      UPDATE public.profiles SET is_suspended = TRUE, suspended_until = NOW() + make_interval(days => p_days) WHERE id = ev.created_by;
+    ELSIF p_sanction = 'ban' THEN
+      UPDATE public.profiles SET is_suspended = TRUE, suspended_until = NULL WHERE id = ev.created_by;
+    END IF;
+
+    INSERT INTO public.moderation_actions (moderator_id, target_user_id, action, duration_days, reason, event_id)
+    VALUES (me, ev.created_by, p_sanction, CASE WHEN p_sanction IN ('event_ban', 'suspend') THEN p_days END, note, p_event);
+  END IF;
+
+  UPDATE public.events
+  SET status = 'rejected', reviewed_by = me, reviewed_at = NOW(), review_note = note, image_path = NULL
+  WHERE id = p_event;
+  DELETE FROM public.event_reports WHERE event_id = p_event;
+  RETURN ev.image_path;
+END;
+$$;
+
+-- La llama la Edge Function de SafeSearch (rol service_role). Ver README.
+-- Forma esperada de p_scan:
+--   {"status": "done", "provider": "google_safesearch", "adult": "VERY_UNLIKELY", "violence": "UNLIKELY",
+--    "racy": "POSSIBLE", "spoof": "UNLIKELY", "medical": "UNLIKELY"}   (o {"status": "error", "error": "..."})
+DROP FUNCTION IF EXISTS public.set_event_image_scan(UUID, JSONB);
+CREATE FUNCTION public.set_event_image_scan(p_event UUID, p_scan JSONB)
+RETURNS VOID
+LANGUAGE sql SECURITY DEFINER SET search_path = public
+AS $$
+  UPDATE public.events SET image_scan = p_scan || jsonb_build_object('checked_at', NOW()) WHERE id = p_event;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.submit_event(TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.list_events() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.list_my_events() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_event(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.report_event(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.list_moderation_queue() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.review_event(UUID, TEXT, TEXT, TEXT, INTEGER) TO authenticated;
+-- scan_text solo la usa submit_event (SECURITY DEFINER); nadie más necesita llamarla
+REVOKE EXECUTE ON FUNCTION public.scan_text(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.submit_event(TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.list_events() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.list_my_events() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.delete_event(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.report_event(UUID, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.list_moderation_queue() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.review_event(UUID, TEXT, TEXT, TEXT, INTEGER) FROM anon;
+
+-- set_event_image_scan: solo service_role (nunca un usuario de la app)
+REVOKE EXECUTE ON FUNCTION public.set_event_image_scan(UUID, JSONB) FROM PUBLIC, anon, authenticated;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT EXECUTE ON FUNCTION public.set_event_image_scan(UUID, JSONB) TO service_role;
+  END IF;
+END $$;
 
 
 -- ==============================================================================

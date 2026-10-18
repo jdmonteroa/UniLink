@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, useMotionValue, useTransform, useMotionValueEvent, animate, AnimatePresence } from 'framer-motion';
 import confetti from 'canvas-confetti';
-import { RotateCcw, LogOut, MessageSquare, Clock, Instagram, Flame, User, Users, AlertCircle, RefreshCw } from 'lucide-react';
+import { RotateCcw, LogOut, MessageSquare, Clock, Instagram, Flame, User, Users, CalendarDays, AlertCircle, RefreshCw } from 'lucide-react';
 import { useAuthStore } from '@/features/auth/authStore';
 import { useThemeStore, type ConnectionMode } from '@/features/theme/themeStore';
 import { supabase, friendlyError } from '@/lib/supabaseClient';
@@ -10,6 +10,8 @@ import { ChatView } from '@/features/chat/ChatView';
 import { ProfileView } from '@/features/profile/ProfileView';
 import { GroupsView } from '@/features/groups/GroupsView';
 import { useGroupsStore } from '@/features/groups/groupsStore';
+import { EventsView } from '@/features/events/EventsView';
+import { useEventsStore } from '@/features/events/eventsStore';
 import { useChatStore } from '@/features/chat/chatStore';
 import { Avatar } from '@/components/Avatar';
 import {
@@ -107,7 +109,7 @@ export const DiscoverPage: React.FC = () => {
   const { isDarkMode, toggleDarkMode, activeModePreview: mode, setActiveModePreview } = useThemeStore();
   const { matches, loadMatches, openMatchById } = useChatStore();
 
-  const [activeTab, setActiveTab] = useState<'discover' | 'chat' | 'groups' | 'profile'>('discover');
+  const [activeTab, setActiveTab] = useState<'discover' | 'chat' | 'groups' | 'events' | 'profile'>('discover');
   const [profiles, setProfiles] = useState<DiscoverStudent[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [photoIndex, setPhotoIndex] = useState(0);
@@ -125,6 +127,11 @@ export const DiscoverPage: React.FC = () => {
   useEffect(() => {
     void loadGroups(); // para avisar de solicitudes pendientes en la barra inferior
   }, [loadGroups]);
+  const pendingEventReviews = useEventsStore((s) => s.queue.length);
+  const loadEventQueue = useEventsStore((s) => s.loadQueue);
+  useEffect(() => {
+    void loadEventQueue(); // solo hace algo si eres moderador
+  }, [loadEventQueue]);
 
   // Carga los matches al entrar (para el puntito de "nuevos mensajes")
   useEffect(() => {
@@ -427,6 +434,12 @@ export const DiscoverPage: React.FC = () => {
       {activeTab === 'groups' && (
         <main className="max-w-md w-full mx-auto px-4 py-4 flex-1">
           <GroupsView />
+        </main>
+      )}
+
+      {activeTab === 'events' && (
+        <main className="max-w-md w-full mx-auto px-4 py-4 flex-1">
+          <EventsView />
         </main>
       )}
 
@@ -817,12 +830,13 @@ export const DiscoverPage: React.FC = () => {
       </div>
 
       <nav className="shrink-0 z-40 pb-[env(safe-area-inset-bottom)] bg-haze-50/90 dark:bg-ink-950/90 backdrop-blur-md border-t border-slate-900/[0.06] dark:border-white/[0.06]">
-        <div className="max-w-md mx-auto px-3 py-2 grid grid-cols-4">
+        <div className="max-w-md mx-auto px-1 py-2 grid grid-cols-5">
           {(
             [
               { id: 'discover', label: 'Descubrir', Icon: Flame },
               { id: 'chat', label: 'Matches', Icon: MessageSquare },
               { id: 'groups', label: 'Grupos', Icon: Users },
+              { id: 'events', label: 'Eventos', Icon: CalendarDays },
               { id: 'profile', label: 'Mi perfil', Icon: User },
             ] as const
           ).map(({ id, label, Icon }) => {
@@ -839,7 +853,7 @@ export const DiscoverPage: React.FC = () => {
               >
                 <span className="relative">
                   <Icon className="w-5.5 h-5.5" strokeWidth={on ? 2.25 : 2} />
-                  {((id === 'chat' && unreadTotal > 0) || (id === 'groups' && pendingGroupRequests > 0)) && (
+                  {((id === 'chat' && unreadTotal > 0) || (id === 'groups' && pendingGroupRequests > 0) || (id === 'events' && pendingEventReviews > 0)) && (
                     <span className="absolute -top-0.5 -right-1 w-2.5 h-2.5 rounded-full bg-brand-600 ring-2 ring-haze-50 dark:ring-ink-950" />
                   )}
                 </span>

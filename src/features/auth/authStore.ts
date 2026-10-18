@@ -69,6 +69,8 @@ export interface UserProfile {
   seeking: SeekingPrefs;
   isVerified: boolean;
   isPaused: boolean;
+  /** 'moderator' y 'admin' pueden revisar eventos (se asigna desde la base de datos). */
+  role: 'student' | 'moderator' | 'admin';
   onboardingCompleted: boolean;
 }
 
@@ -275,6 +277,7 @@ async function fetchFullProfile(authUser: AuthUser): Promise<UserProfile> {
     seeking,
     isVerified: Boolean(row.is_photo_verified),
     isPaused: Boolean(row.is_paused),
+    role: row.role === 'admin' || row.role === 'moderator' ? row.role : 'student',
     onboardingCompleted,
   };
 }
@@ -370,6 +373,7 @@ const demoUser = (): UserProfile => ({
   seeking: { ...DEFAULT_SEEKING },
   isVerified: true,
   isPaused: false,
+  role: 'moderator', // para poder probar la cola de moderación en el modo demo
   onboardingCompleted: true,
 });
 

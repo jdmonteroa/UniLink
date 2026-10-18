@@ -1,6 +1,7 @@
 import { supabase, friendlyError } from '@/lib/supabaseClient';
 
 export const AVATAR_BUCKET = 'avatars';
+export const EVENT_BUCKET = 'event-images';
 export const MAX_PHOTOS = 2;
 const MAX_INPUT_BYTES = 20 * 1024 * 1024; // lo que aceptamos del celular antes de comprimir
 const MAX_SIDE = 1440; // px del lado más largo tras comprimir
@@ -11,10 +12,10 @@ const JPEG_QUALITY = 0.85;
  * puede mostrar. Acepta rutas del bucket ("<uid>/foto.jpg") y URLs completas
  * (perfiles de prueba con Unsplash, o blobs del modo demo).
  */
-export function photoUrl(path?: string | null): string {
+export function photoUrl(path?: string | null, bucket: string = AVATAR_BUCKET): string {
   if (!path) return '';
   if (/^(https?:|blob:|data:)/i.test(path)) return path;
-  return supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl;
+  return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
 }
 
 /** true si la ruta vive en nuestro bucket (y por lo tanto se puede borrar). */
@@ -91,7 +92,7 @@ function storageErrorMessage(err: unknown): string {
   const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : '';
   const lower = msg.toLowerCase();
   if (lower.includes('bucket not found'))
-    return "No existe el bucket 'avatars' en Supabase. Corre supabase/setup.sql en el SQL Editor.";
+    return "No existe el bucket de imágenes en Supabase. Corre supabase/setup.sql en el SQL Editor.";
   if (lower.includes('row-level security') || lower.includes('unauthorized') || lower.includes('403'))
     return 'Supabase no dejó subir la foto (políticas de Storage). Corre supabase/setup.sql y vuelve a iniciar sesión.';
   if (lower.includes('maximum allowed size') || lower.includes('payload too large'))
@@ -104,10 +105,10 @@ function storageErrorMessage(err: unknown): string {
  * Comprime y sube una foto a avatars/<userId>/<id>.jpg.
  * Devuelve la ruta dentro del bucket (eso es lo que se guarda en profile_photos).
  */
-export async function uploadProfilePhoto(userId: string, file: File): Promise<string> {
+export async function uploadProfilePhoto(userId: string, file: File, bucket: string = AVATAR_BUCKET): Promise<string> {
   const blob = await compressImage(file);
   const path = `${userId}/${randomId()}.jpg`;
-  const { error } = await supabase.storage.from(AVATAR_BUCKET).upload(path, blob, {
+  const { error } = await supabase.storage.from(bucket).upload(path, blob, {
     contentType: 'image/jpeg',
     cacheControl: '31536000',
     upsert: false,
@@ -117,10 +118,10 @@ export async function uploadProfilePhoto(userId: string, file: File): Promise<st
 }
 
 /** Borra archivos del bucket. Los errores se ignoran (el archivo ya no se usa). */
-export async function removeStoredPhotos(paths: string[]): Promise<void> {
+export async function removeStoredPhotos(paths: string[], bucket: string = AVATAR_BUCKET): Promise<void> {
   const own = paths.filter(isStoragePath);
   if (own.length === 0) return;
-  const { error } = await supabase.storage.from(AVATAR_BUCKET).remove(own);
+  const { error } = await supabase.storage.from(bucket).remove(own);
   if (error) console.warn('[UniLink] No se pudieron borrar fotos viejas del bucket:', error.message);
 }
 
