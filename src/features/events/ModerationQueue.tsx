@@ -6,14 +6,14 @@ import {
   imageRisk,
   likelihoodLevel,
   REPORT_REASONS,
+  SANCTION_LIMIT,
   type QueueItem,
   type ScanHit,
-  type SanctionKind,
   type ImageScan,
 } from '@/features/events/eventsStore';
 import { Avatar } from '@/components/Avatar';
 import { confirmDialog } from '@/components/ConfirmDialog';
-import { CategoryBadge, EventThumb, NoticeBanner, Spinner, card, chip, formatWhen, inputCls, labelCls, outlineBtn, useNotice } from '@/features/events/ui';
+import { CategoryBadge, EventThumb, NoticeBanner, Spinner, card, formatWhen, inputCls, labelCls, outlineBtn, useNotice } from '@/features/events/ui';
 
 const HIT_CATEGORY: Record<ScanHit['category'], string> = {
   insult: 'Insulto',
@@ -49,14 +49,6 @@ const QUICK_REASONS = [
   'Parece spam o estafa.',
   'Información incompleta o poco clara.',
   'No corresponde a la comunidad universitaria.',
-];
-
-const SANCTIONS: { id: SanctionKind | 'none'; label: string; hint: string; days?: number[]; adminOnly?: boolean }[] = [
-  { id: 'none', label: 'Solo rechazar', hint: 'Sin sanción para la persona.' },
-  { id: 'warn', label: 'Advertencia', hint: 'Queda registrada en su historial.' },
-  { id: 'event_ban', label: 'No poder publicar eventos', hint: 'Por un tiempo; el resto de la app sigue igual.', days: [3, 7, 30] },
-  { id: 'suspend', label: 'Suspender la cuenta', hint: 'Deja de aparecer en Descubrir y no puede publicar.', days: [3, 7, 30] },
-  { id: 'ban', label: 'Bloqueo permanente', hint: 'Solo administradores.', adminOnly: true },
 ];
 
 const ImageScanPanel: React.FC<{ hasImage: boolean; scan: ImageScan | null }> = ({ hasImage, scan }) => {
@@ -107,17 +99,15 @@ const ImageScanPanel: React.FC<{ hasImage: boolean; scan: ImageScan | null }> = 
   );
 };
 
-const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message: string) => void; onError: (message: string) => void }> = ({
+const QueueCard: React.FC<{ item: QueueItem; onDone: (message: string) => void; onError: (message: string) => void }> = ({
   item,
-  isAdmin,
   onDone,
   onError,
 }) => {
   const reviewEvent = useEventsStore((s) => s.reviewEvent);
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState('');
-  const [sanction, setSanction] = useState<SanctionKind | 'none'>('none');
-  const [days, setDays] = useState(7);
+  const [sanction, setSanction] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const verdict = item.textScan?.verdict ?? 'clean';
@@ -126,7 +116,8 @@ const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message:
     review: { label: 'Revisar', cls: 'bg-sun/60 text-slate-900 dark:bg-sun/25 dark:text-slate-100', Icon: ShieldAlert },
     flagged: { label: 'Marcado', cls: 'bg-rose-200 text-rose-900 dark:bg-rose-950 dark:text-rose-200', Icon: ShieldAlert },
   }[verdict];
-  const sanctionDef = SANCTIONS.find((s) => s.id === sanction)!;
+  const nextStrike = item.priorSanctions + 1;
+  const wouldBlock = nextStrike >= SANCTION_LIMIT;
 
   const approve = async () => {
     setBusy(true);
@@ -141,10 +132,12 @@ const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message:
       onError('Escribe el motivo del rechazo: lo verá quien publicó.');
       return;
     }
-    if (sanction !== 'none') {
+    if (sanction) {
       const ok = await confirmDialog({
         title: `¿Sancionar a ${item.author.name.split(' ')[0]}?`,
-        message: `${sanctionDef.label}${sanctionDef.days ? ` por ${days} días` : ''}. Quedará registrado en su historial.`,
+        message: wouldBlock
+          ? `Será su sanción ${nextStrike} de ${SANCTION_LIMIT}: su cuenta se bloqueará automáticamente. Se le enviará un correo.`
+          : `Será su sanción ${nextStrike} de ${SANCTION_LIMIT}. Se le enviará un correo con su conteo.`,
         confirmLabel: 'Rechazar y sancionar',
         tone: 'danger',
       });
@@ -154,11 +147,10 @@ const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message:
     const res = await reviewEvent(item.id, {
       decision: 'reject',
       note,
-      sanction: sanction === 'none' ? undefined : sanction,
-      days: sanctionDef.days ? days : undefined,
+      sanction,
     });
     setBusy(false);
-    if (res.success) onDone(sanction === 'none' ? 'Publicación rechazada.' : 'Publicación rechazada y sanción aplicada.');
+    if (res.success) onDone(sanction ? 'Publicación rechazada y sanción aplicada.' : 'Publicación rechazada.');
     else onError(res.message || 'No se pudo rechazar.');
   };
 
@@ -194,7 +186,9 @@ const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message:
         </div>
         <div className="text-right text-xs text-slate-600 dark:text-haze-300 shrink-0 space-y-0.5">
           <p>{item.priorRejections} {item.priorRejections === 1 ? 'rechazo' : 'rechazos'}</p>
-          <p>{item.priorSanctions} {item.priorSanctions === 1 ? 'sanción' : 'sanciones'}</p>
+          <p className={item.priorSanctions >= SANCTION_LIMIT - 1 ? 'font-semibold text-rose-700 dark:text-rose-400' : ''}>
+            {item.priorSanctions}/{SANCTION_LIMIT} sanciones
+          </p>
         </div>
       </div>
 
@@ -236,9 +230,6 @@ const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message:
             <p className="text-xs">Ya estaba publicada y volvió a revisión.</p>
           </div>
         )}
-        {item.authorBanUntil && new Date(item.authorBanUntil) > new Date() && (
-          <p className="text-sm text-slate-600 dark:text-haze-300">Esta persona tiene prohibido publicar hasta {new Date(item.authorBanUntil).toLocaleDateString('es-MX')}.</p>
-        )}
         <p className="text-xs text-slate-500 dark:text-haze-400">Los filtros solo orientan. La decisión es tuya.</p>
       </section>
 
@@ -273,26 +264,18 @@ const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message:
             <textarea id={`note-${item.id}`} rows={3} maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} className={inputCls} placeholder="Explica por qué se rechaza" />
           </div>
 
-          <fieldset className="space-y-2">
-            <legend className={labelCls}>Sanción</legend>
-            {SANCTIONS.filter((s) => !s.adminOnly || isAdmin).map((s) => (
-              <label key={s.id} className={`flex items-start gap-3 p-3 rounded-xl border-2 cursor-pointer transition-colors ${sanction === s.id ? 'border-slate-900 dark:border-slate-50' : 'border-slate-900/10 dark:border-white/10'}`}>
-                <input type="radio" name={`sanction-${item.id}`} checked={sanction === s.id} onChange={() => setSanction(s.id)} className="mt-1" />
-                <span className="text-sm">
-                  <span className="font-semibold block">{s.label}</span>
-                  <span className="text-slate-500 dark:text-haze-400">{s.hint}</span>
-                </span>
-              </label>
-            ))}
-            {sanctionDef.days && (
-              <div className="flex gap-2 items-center pt-1" role="radiogroup" aria-label="Duración en días">
-                <span className="text-sm font-semibold">Duración:</span>
-                {sanctionDef.days.map((d) => (
-                  <button type="button" key={d} role="radio" aria-checked={days === d} onClick={() => setDays(d)} className={chip(days === d)}>{d} días</button>
-                ))}
-              </div>
-            )}
-          </fieldset>
+          <label className={`flex items-start gap-3 p-3 rounded-xl border-2 cursor-pointer transition-colors ${sanction ? 'border-rose-600' : 'border-slate-900/10 dark:border-white/10'}`}>
+            <input type="checkbox" checked={sanction} onChange={(e) => setSanction(e.target.checked)} className="mt-1" />
+            <span className="text-sm">
+              <span className="font-semibold block">Sancionar a {item.author.name.split(' ')[0]}</span>
+              <span className="text-slate-500 dark:text-haze-400">
+                Suma una sanción ({nextStrike} de {SANCTION_LIMIT}) y le llega un correo con su conteo. A las {SANCTION_LIMIT} su cuenta se bloquea sola.
+              </span>
+              {sanction && wouldBlock && (
+                <span className="block mt-1 font-semibold text-rose-700 dark:text-rose-400">Esta sería la sanción {SANCTION_LIMIT}: su cuenta se bloqueará.</span>
+              )}
+            </span>
+          </label>
 
           <div className="flex gap-3">
             <button onClick={() => setRejecting(false)} disabled={busy} className={`${outlineBtn} h-12`}>Cancelar</button>
@@ -302,7 +285,7 @@ const QueueCard: React.FC<{ item: QueueItem; isAdmin: boolean; onDone: (message:
               className="flex-1 inline-flex items-center justify-center gap-2 h-12 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold transition active:scale-[0.97] disabled:opacity-60"
             >
               {busy && <Loader2 className="w-4 h-4 animate-spin" />}
-              {sanction === 'none' ? 'Rechazar' : 'Rechazar y sancionar'}
+              {sanction ? 'Rechazar y sancionar' : 'Rechazar'}
             </button>
           </div>
         </div>
@@ -342,7 +325,6 @@ export const ModerationQueue: React.FC = () => {
             <QueueCard
               key={item.id}
               item={item}
-              isAdmin={user.role === 'admin'}
               onDone={(text) => setNotice({ kind: 'ok', text })}
               onError={(text) => setNotice({ kind: 'error', text })}
             />

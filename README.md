@@ -104,7 +104,7 @@ La app no tiene un servidor propio: el frontend habla directo con Supabase usand
 ### Moderación de eventos
 Todo evento o aviso nace **en revisión** y solo se publica cuando un moderador o administrador lo aprueba.
 
-- **Quién modera**: quien tenga `role = 'moderator'` (o `'admin'`, que además puede dar bloqueos permanentes) en `profiles`. Se asigna una sola vez desde el SQL Editor:
+- **Quién modera**: quien tenga `role = 'moderator'` (o `'admin'`, para las cuentas dedicadas a moderar; ver Administradores) en `profiles`. Se asigna una sola vez desde el SQL Editor:
   ```sql
   UPDATE public.profiles SET role = 'moderator' WHERE id = '<uuid del usuario>';
   ```
@@ -121,8 +121,31 @@ Todo evento o aviso nace **en revisión** y solo se publica cuando un moderador 
      ```
      (o `{ "status": "error", "error": "mensaje" }` si falla). Los valores son los de SafeSearch: `VERY_UNLIKELY`, `UNLIKELY`, `POSSIBLE`, `LIKELY`, `VERY_LIKELY`.
   La función `set_event_image_scan` solo puede ejecutarla `service_role`; ningún usuario de la app puede llamarla.
-- **Decisiones**: *Aprobar*; *Rechazar* (con un motivo que ve quien publicó; la imagen se borra del almacenamiento); o *Rechazar y sancionar*: advertencia, no poder publicar eventos N días, suspender la cuenta N días o bloqueo permanente (solo administradores). Las sanciones quedan en `moderation_actions`.
-- **Otras protecciones**: máximo 3 publicaciones activas por persona, los eventos expiran solos (6 h después de su hora, o 14 días si son avisos) y un evento ya publicado vuelve a revisión si 2 personas distintas lo reportan.
+- **Decisiones**: *Aprobar*; *Rechazar* (con un motivo que ve quien publicó; la imagen se borra del almacenamiento); o *Rechazar y sancionar*. Cada sanción suma **una** al contador de la persona (`moderation_actions`, acción `strike`) y le manda un correo. **A las 5 sanciones la cuenta se bloquea sola**: el perfil queda bloqueado, se marca `banned_until = infinity` en Supabase Auth (ya no puede iniciar sesión) y se cierran sus sesiones. Quien modera no decide el bloqueo.
+- **Desbloquear** (manual, desde el SQL Editor, si fue un error):
+  ```sql
+  UPDATE public.profiles SET is_suspended = FALSE, suspended_until = NULL WHERE id = '<uuid>';
+  UPDATE auth.users SET banned_until = NULL WHERE id = '<uuid>';
+  DELETE FROM public.moderation_actions WHERE target_user_id = '<uuid>' AND action IN ('strike', 'ban'); -- reinicia el conteo
+  ```
+- **Otras protecciones**: máximo 3 publicaciones activas por persona, quien tenga la cuenta bloqueada no puede publicar, los eventos expiran solos (6 h después de su hora, o 14 días si son avisos) y un evento ya publicado vuelve a revisión si 2 personas distintas lo reportan.
+
+### Administradores
+Las cuentas de administración se crean con `supabase/seed-admins.sql` (se corre **después** de `setup.sql`; no forma parte de `setup.sql` a propósito). Crea `admin1@edu.uaa.mx` y `admin2@edu.uaa.mx` ya confirmados, sin verificación ni onboarding.
+
+- Solo ven **Eventos** (abre directo en *Moderación*) y **Mi perfil**. No aparecen en Descubrir ni usan Matches o Grupos.
+- La contraseña inicial está escrita en ese archivo: **cámbiala en el primer inicio de sesión** (Mi perfil → Cambiar contraseña) y no subas el archivo a un repositorio público.
+- Para volver a alguien administrador o quitarle el acceso: `UPDATE public.profiles SET role = 'admin' | 'student' WHERE id = '<uuid>';`
+
+### Correos de sanción
+Cada sanción agrega una fila a `public.email_outbox` (destinatario, plantilla y datos: nombre, evento, motivo, sanciones, límite y si la cuenta quedó bloqueada). Así la sanción siempre se registra aunque el envío falle. La plantilla es `supabase/email-templates/sancion.html` y muestra el conteo ("2 de 5"), cuántas sanciones le quedan y el aviso de que a las 5 la cuenta se bloquea; al llegar a 5 el correo avisa del bloqueo.
+
+El envío lo hace la Edge Function `supabase/functions/send-sanction-email` (usa [Resend](https://resend.com); se puede cambiar por otro proveedor editando `sendMail()`). **Aún no está desplegada ni se ha probado contra un proveedor real**; lo que sí está probado es el renderizado de la plantilla (`render.test.ts`). Para activarla:
+1. `supabase secrets set RESEND_API_KEY=... MAIL_FROM="UniLink <avisos@tu-dominio>" WEBHOOK_SECRET=<cadena larga al azar>` (el remitente debe ser un dominio verificado en el proveedor).
+2. `supabase functions deploy send-sanction-email --no-verify-jwt`
+3. En Supabase → Database → Webhooks: nuevo webhook sobre `INSERT` en `public.email_outbox` que llame a la función, con el encabezado `x-webhook-secret: <el mismo WEBHOOK_SECRET>`.
+
+Si cambias la plantilla, copia el mismo contenido a `supabase/functions/send-sanction-email/sancion.html` (una prueba verifica que ambas sean idénticas). Los correos que fallen quedan con `status = 'failed'` y el error en `last_error`.
 
 ### Fotos
 Las fotos se comprimen en el navegador (máx. 1440 px, JPEG) y se suben al bucket `avatars` en `avatars/<tu-id>/<archivo>.jpg`. La base de datos no guarda la imagen, solo su ruta en `profile_photos.storage_path` junto con su posición (0 = foto principal, 1 = segunda foto; máximo 2). La app convierte esa ruta en una URL pública para mostrarla. Solo el dueño puede subir o borrar archivos en su carpeta.

@@ -10,6 +10,7 @@ import {
   type EventItem,
   type MyEvent,
   type ReportReason,
+  SANCTION_LIMIT,
 } from '@/features/events/eventsStore';
 import { EVENT_BUCKET, removeStoredPhotos, uploadProfilePhoto } from '@/lib/photos';
 import { confirmDialog } from '@/components/ConfirmDialog';
@@ -325,11 +326,11 @@ const EventForm: React.FC<{ onDone: () => void; onCancel: () => void }> = ({ onD
 // ---------------------------------------------------------------------------
 // Contenedor
 // ---------------------------------------------------------------------------
-export const EventsView: React.FC = () => {
+export const EventsView: React.FC<{ defaultTab?: Tab }> = ({ defaultTab = 'feed' }) => {
   const { user } = useAuthStore();
-  const { feed, mine, queue, isLoading, error, loadFeed, loadMine, deleteEvent } = useEventsStore();
+  const { feed, mine, queue, mySanctions, isLoading, error, loadFeed, loadMine, deleteEvent } = useEventsStore();
   const [view, setView] = useState<View>({ kind: 'tabs' });
-  const [tab, setTab] = useState<Tab>('feed');
+  const [tab, setTab] = useState<Tab>(defaultTab);
   const [notice, setNotice] = useNotice();
   const topRef = useRef<HTMLDivElement>(null);
   const isModerator = !!user && user.role !== 'student';
@@ -422,6 +423,12 @@ export const EventsView: React.FC = () => {
                 )}
               </>
             ))}
+
+          {tab === 'mine' && mySanctions > 0 && (
+            <p className={`p-3 rounded-xl text-sm ${mySanctions >= SANCTION_LIMIT - 1 ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-900 dark:text-rose-200' : 'bg-sun/30 dark:bg-sun/10 text-slate-800 dark:text-slate-200'}`}>
+              <strong>Llevas {mySanctions} de {SANCTION_LIMIT} sanciones.</strong> Al llegar a {SANCTION_LIMIT}, tu cuenta se bloquea automáticamente. Cuida lo que publicas.
+            </p>
+          )}
 
           {tab === 'mine' &&
             (mine.length === 0 ? (

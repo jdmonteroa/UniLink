@@ -17,7 +17,8 @@ export type EventCategory = (typeof EVENT_CATEGORIES)[number]['id'];
 export const eventCategoryLabel = (id: string) => EVENT_CATEGORIES.find((c) => c.id === id)?.label ?? 'Otro';
 
 export type EventStatus = 'pending' | 'approved' | 'rejected';
-export type SanctionKind = 'warn' | 'event_ban' | 'suspend' | 'ban';
+/** A las 5 sanciones la cuenta se bloquea sola (lo aplica la base de datos). */
+export const SANCTION_LIMIT = 5;
 export type ReportReason = 'offensive' | 'sexual' | 'spam' | 'false' | 'other';
 
 export const REPORT_REASONS: { id: ReportReason; label: string }[] = [
@@ -116,8 +117,8 @@ export interface QueueItem {
   reportCount: number;
   reportReasons: ReportReason[];
   priorRejections: number;
+  /** Sanciones que ya tiene quien publicó (de SANCTION_LIMIT). */
   priorSanctions: number;
-  authorBanUntil: string | null;
 }
 
 export interface EventInput {
@@ -133,8 +134,8 @@ export interface EventInput {
 export interface ReviewInput {
   decision: 'approve' | 'reject';
   note: string;
-  sanction?: SanctionKind;
-  days?: number;
+  /** Solo con 'reject': suma una sanción a quien publicó y le avisa por correo. */
+  sanction?: boolean;
 }
 
 export function validateEventInput(input: EventInput): string | null {
@@ -199,7 +200,6 @@ interface QueueRow {
   report_reasons: ReportReason[] | null;
   prior_rejections: number;
   prior_sanctions: number;
-  author_ban_until: string | null;
 }
 
 const mapFeed = (r: FeedRow): EventItem => ({
@@ -254,7 +254,6 @@ const mapQueue = (r: QueueRow): QueueItem => ({
   reportReasons: r.report_reasons || [],
   priorRejections: r.prior_rejections,
   priorSanctions: r.prior_sanctions,
-  authorBanUntil: r.author_ban_until,
 });
 
 // ---------------------------------------------------------------------------
@@ -304,8 +303,7 @@ function getDemoDb(): DemoDb {
       reportCount: 0,
       reportReasons: [],
       priorRejections: 1,
-      priorSanctions: 0,
-      authorBanUntil: null,
+      priorSanctions: 4,
     },
     {
       id: 'demo-q-2',
@@ -324,7 +322,6 @@ function getDemoDb(): DemoDb {
       reportReasons: [],
       priorRejections: 0,
       priorSanctions: 0,
-      authorBanUntil: null,
     },
   ];
   demoDb = { feed, mine: [], queue };
@@ -338,6 +335,8 @@ interface EventsState {
   feed: EventItem[];
   mine: MyEvent[];
   queue: QueueItem[];
+  /** Sanciones de quien consulta (para avisarle cuántas lleva). */
+  mySanctions: number;
   ownerId: string | null;
   isLoading: boolean;
   error: string | null;
@@ -358,6 +357,7 @@ export const useEventsStore = create<EventsState>((set, get) => ({
   feed: [],
   mine: [],
   queue: [],
+  mySanctions: 0,
   ownerId: null,
   isLoading: false,
   error: null,
@@ -365,7 +365,7 @@ export const useEventsStore = create<EventsState>((set, get) => ({
   loadFeed: async () => {
     const me = auth().user;
     if (!me) return;
-    if (get().ownerId !== me.id) set({ feed: [], mine: [], queue: [], ownerId: me.id });
+    if (get().ownerId !== me.id) set({ feed: [], mine: [], queue: [], mySanctions: 0, ownerId: me.id });
     if (auth().isDemo) {
       set({ feed: getDemoDb().feed, isLoading: false, error: null });
       return;
@@ -385,12 +385,15 @@ export const useEventsStore = create<EventsState>((set, get) => ({
       set({ mine: getDemoDb().mine });
       return;
     }
-    const { data, error } = await supabase.rpc('list_my_events');
-    if (error) {
-      set({ error: friendlyError(error, 'No se pudieron cargar tus publicaciones.') });
+    const [events, sanctions] = await Promise.all([supabase.rpc('list_my_events'), supabase.rpc('my_sanction_count')]);
+    if (events.error) {
+      set({ error: friendlyError(events.error, 'No se pudieron cargar tus publicaciones.') });
       return;
     }
-    set({ mine: ((data || []) as MineRow[]).map(mapMine) });
+    set({
+      mine: ((events.data || []) as MineRow[]).map(mapMine),
+      mySanctions: typeof sanctions.data === 'number' ? sanctions.data : 0,
+    });
   },
 
   loadQueue: async () => {
@@ -495,8 +498,7 @@ export const useEventsStore = create<EventsState>((set, get) => ({
       p_event: id,
       p_decision: review.decision,
       p_note: review.note.trim() || null,
-      p_sanction: review.sanction ?? null,
-      p_days: review.days ?? null,
+      p_sanction: review.sanction ?? false,
     });
     if (error) return fail(error, 'No se pudo guardar la decisión.');
     // Al rechazar se borra la imagen del almacenamiento (el moderador tiene permiso)

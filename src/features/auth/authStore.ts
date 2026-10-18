@@ -71,6 +71,8 @@ export interface UserProfile {
   isPaused: boolean;
   /** 'moderator' y 'admin' pueden revisar eventos (se asigna desde la base de datos). */
   role: 'student' | 'moderator' | 'admin';
+  /** Cuenta bloqueada de forma permanente (p. ej. al llegar a 5 sanciones). */
+  isBlocked: boolean;
   onboardingCompleted: boolean;
 }
 
@@ -278,6 +280,7 @@ async function fetchFullProfile(authUser: AuthUser): Promise<UserProfile> {
     isVerified: Boolean(row.is_photo_verified),
     isPaused: Boolean(row.is_paused),
     role: row.role === 'admin' || row.role === 'moderator' ? row.role : 'student',
+    isBlocked: row.is_suspended === true && !row.suspended_until,
     onboardingCompleted,
   };
 }
@@ -374,6 +377,7 @@ const demoUser = (): UserProfile => ({
   isVerified: true,
   isPaused: false,
   role: 'moderator', // para poder probar la cola de moderación en el modo demo
+  isBlocked: false,
   onboardingCompleted: true,
 });
 
