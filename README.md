@@ -1,3 +1,5 @@
+<p align="center"><img src="public/logo-unilink.png" alt="UniLink" width="160" /></p>
+
 # UniLink
 
 > **App web para conectar estudiantes universitarios verificados de forma segura según intereses reales.**
@@ -13,6 +15,7 @@
 - **Matches y chat en tiempo real**: cuando el interés es mutuo se crea el match y se abre el chat. Incluye deshacer match, bloquear y reportar, y moderación automática de mensajes.
 - **Perfil**: hasta 6 fotos, biografía, Instagram (solo lo ven tus matches), intereses, materias y horario libre.
 - **Modo día y noche**.
+- **App instalable (PWA)**: se puede instalar en el celular desde el navegador, abre aunque no haya internet y avisa cuando hay una versión nueva.
 
 ---
 
@@ -24,6 +27,7 @@
 - **Estado & Datos**: Zustand (sesión / tema) + TanStack Query v5 (servidor)
 - **Formularios & Validación**: React Hook Form + Zod
 - **Backend (BaaS)**: Supabase (Auth con verificación institucional, PostgreSQL con RLS, Realtime, Storage)
+- **PWA**: vite-plugin-pwa (manifiesto, íconos y service worker con Workbox)
 - **Testing**: Vitest
 
 ---
@@ -99,6 +103,14 @@ La app no tiene un servidor propio: el frontend habla directo con Supabase usand
 Las fotos se comprimen en el navegador (máx. 1440 px, JPEG) y se suben al bucket `avatars` en `avatars/<tu-id>/<archivo>.jpg`. La base de datos no guarda la imagen, solo su ruta en `profile_photos.storage_path` junto con su posición (0 = foto principal, máximo 6). La app convierte esa ruta en una URL pública para mostrarla. Solo el dueño puede subir o borrar archivos en su carpeta.
 
 ---
+
+## App instalable (PWA)
+
+- **Íconos**: están en `public/` (el logo oficial: dos personas cuyos cuerpos forman la "u" y se enlazan; el favicon de la pestaña es `favicon.ico`). El manifiesto (nombre, colores e íconos) se configura en `vite.config.ts`.
+- **Instalar**: en Android/Chrome aparece el botón "Instalar app" en *Mi perfil*; en iPhone se muestran los pasos para agregarla desde Safari (Compartir → Agregar a inicio).
+- **Sin conexión**: la app y las fotos ya vistas se guardan en el celular. Los datos (perfiles, mensajes) siempre se piden a Supabase, así que sin internet aparece el aviso "Sin conexión".
+- **Actualizaciones**: después de cada despliegue, quien tenga la app abierta ve "Hay una versión nueva" y decide cuándo actualizar.
+- El service worker solo funciona en producción (`npm run build`); en `npm run dev` no se activa.
 
 ## Estructura del proyecto
 

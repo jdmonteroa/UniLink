@@ -15,7 +15,7 @@
     "jsx": "react-jsx",
 
     /* Types */
-    "types": ["vite/client"],
+    "types": ["vite/client", "vite-plugin-pwa/react"],
 
     /* Linting */
     "strict": true,
@@ -24,9 +24,8 @@
     "noFallthroughCasesInSwitch": true,
 
     /* Path Aliases */
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]

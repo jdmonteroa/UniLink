@@ -5,6 +5,7 @@ import { queryClient } from '@/lib/queryClient';
 import { router } from '@/app/router';
 import { useAuthStore } from '@/features/auth/authStore';
 import { ConfirmDialogHost } from '@/components/ConfirmDialog';
+import { PwaPrompts } from '@/components/PwaPrompts';
 
 export const App: React.FC = () => {
   const init = useAuthStore((s) => s.init);
@@ -19,6 +20,7 @@ export const App: React.FC = () => {
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
       <ConfirmDialogHost />
+      <PwaPrompts />
     </QueryClientProvider>
   );
 };
