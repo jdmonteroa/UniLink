@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light only">
+<title>Tu enlace para entrar</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;1,9..144,600&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body style="margin:0;padding:0;background:#F5F4F0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F5F4F0;">
+<tr><td align="center" style="padding:32px 16px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;">
+    <!-- Logo -->
+    <tr><td align="center" style="padding-bottom:24px;">
+      <img src="https://unilink-uaa.vercel.app/logo-circle.png" width="72" height="72" alt="UniLink" style="display:block;border:0;border-radius:50%;">
+    </td></tr>
+    <!-- Tarjeta -->
+    <tr><td style="background:#FFFFFF;border:2px solid #121212;border-radius:24px;padding:36px 32px;box-shadow:4px 4px 0 #121212;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+        <td style="background:#FFC93C;border:2px solid #121212;border-radius:999px;padding:6px 14px;font-family:'Plus Jakarta Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:12px;font-weight:700;color:#121212;letter-spacing:.5px;text-transform:uppercase;">Acceso rápido</td>
+      </tr></table>
+      <h1 style="margin:20px 0 12px;font-family:'Fraunces', Georgia, 'Times New Roman', serif;font-size:32px;line-height:1.15;font-weight:600;color:#121212;">Tu enlace para <em style="color:#A30021;">entrar.</em></h1>
+      <p style="margin:0 0 28px;font-family:'Plus Jakarta Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px;line-height:1.6;color:#3A3A3A;">Toca el botón para iniciar sesión en UniLink. El enlace solo funciona una vez y caduca pronto.</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+        <td align="center" style="background:#A30021;border:2px solid #121212;border-radius:999px;">
+          <a href="{{ .ConfirmationURL }}" target="_blank" style="display:inline-block;padding:14px 28px;font-family:'Plus Jakarta Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px;font-weight:700;color:#FFFFFF;text-decoration:none;">Entrar a UniLink &rarr;</a>
+        </td>
+      </tr></table>
+      <p style="margin:28px 0 0;font-family:'Plus Jakarta Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:13px;line-height:1.6;color:#6B6B6B;">¿El botón no funciona? Copia y pega este enlace en tu navegador:<br>
+        <a href="{{ .ConfirmationURL }}" style="color:#A30021;word-break:break-all;">{{ .ConfirmationURL }}</a></p>
+    </td></tr>
+    <!-- Pie -->
+    <tr><td align="center" style="padding:24px 16px 0;font-family:'Plus Jakarta Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:12px;line-height:1.6;color:#6B6B6B;">
+      Si tú no pediste este enlace, ignora este correo.<br>
+      <span style="font-family:'Fraunces', Georgia, 'Times New Roman', serif;font-size:14px;color:#121212;">uni<em>link</em><span style="color:#FFC93C;">.</span></span> &middot; Hecho para estudiantes de la UAA
+    </td></tr>
+  </table>
+</td></tr>
+</table>
+</body>
+</html>
