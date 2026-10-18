@@ -57,8 +57,8 @@ export function friendlyError(err: unknown, fallback = 'Ocurrió un error inespe
   if (msg.includes('rate limit') || msg.includes('too many requests'))
     return 'Demasiados intentos. Espera un minuto e inténtalo de nuevo.';
   if (msg.includes('could not find the function') || msg.includes('does not exist'))
-    return 'A tu base de datos le falta una actualización. Corre supabase/migrations/007_reparacion_onboarding_fotos_chat.sql en el SQL Editor de Supabase.';
+    return 'A tu base de datos le falta una actualización. Corre supabase/setup.sql en el SQL Editor de Supabase.';
   if (msg.includes('row-level security') || msg.includes('permission denied'))
-    return 'Supabase rechazó la operación por permisos (RLS). Corre la migración 007 en el SQL Editor.';
+    return 'Supabase rechazó la operación por permisos (RLS). Corre supabase/setup.sql en el SQL Editor.';
   return raw;
 }

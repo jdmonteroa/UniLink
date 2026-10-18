@@ -91,9 +91,9 @@ function storageErrorMessage(err: unknown): string {
   const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : '';
   const lower = msg.toLowerCase();
   if (lower.includes('bucket not found'))
-    return "No existe el bucket 'avatars' en Supabase. Corre la migración 007 en el SQL Editor.";
+    return "No existe el bucket 'avatars' en Supabase. Corre supabase/setup.sql en el SQL Editor.";
   if (lower.includes('row-level security') || lower.includes('unauthorized') || lower.includes('403'))
-    return 'Supabase no dejó subir la foto (políticas de Storage). Corre la migración 007 y vuelve a iniciar sesión.';
+    return 'Supabase no dejó subir la foto (políticas de Storage). Corre supabase/setup.sql y vuelve a iniciar sesión.';
   if (lower.includes('maximum allowed size') || lower.includes('payload too large'))
     return 'La foto es demasiado pesada para el bucket.';
   if (lower.includes('mime type')) return 'Formato no permitido. Usa JPG, PNG o WEBP.';

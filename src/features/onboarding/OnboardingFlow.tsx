@@ -288,7 +288,7 @@ export const OnboardingFlow: React.FC = () => {
       <main className="max-w-md w-full mx-auto px-5 py-8 flex-1 flex flex-col">
         {catalogEmpty && (
           <p className="mb-5 text-sm p-3.5 rounded-lg bg-sun/25 dark:bg-sun/10 text-amber-900 dark:text-amber-200">
-            Tu base de datos no tiene carreras o intereses todavía. Corre <code className="font-mono text-[0.85em]">supabase/seed.sql</code> en el SQL Editor.
+            Tu base de datos no tiene carreras o intereses todavía. Corre <code className="font-mono text-[0.85em]">supabase/setup.sql</code> en el SQL Editor.
           </p>
         )}
 

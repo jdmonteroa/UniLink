@@ -70,22 +70,17 @@ npm run build
 
 ## Configuración de Supabase
 
-En el **SQL Editor** de tu proyecto de Supabase corre, en este orden:
+Toda la base de datos está en un solo archivo: `supabase/setup.sql`. Cópialo completo en el **SQL Editor** de tu proyecto de Supabase y presiona *Run*. Crea las tablas, la seguridad (RLS), el bucket `avatars` para fotos, el matching, las funciones del chat, la moderación y el catálogo de la UAA (dominios `@edu.uaa.mx`, campus, carreras, materias e intereses).
 
-1. `supabase/COMPLETE_SETUP.sql` *(solo si es un proyecto nuevo; si ya lo corriste, sáltalo)*
-2. `supabase/migrations/007_reparacion_onboarding_fotos_chat.sql` **(obligatorio)**: crea las políticas RLS que faltaban, el bucket `avatars` para fotos, el matching, las funciones del chat y la moderación.
-3. `supabase/migrations/008_preferencia_genero_todos_los_modos.sql` **(obligatorio)**: hace que la preferencia "Quiero conocer" (Mujeres, Hombres o Todos) filtre en los tres modos y en ambos sentidos.
-4. `supabase/seed.sql`: carreras, materias, intereses y 10 estudiantes de prueba.
-
-Las migraciones 007 y 008 se pueden correr varias veces sin romper nada.
+Sirve tanto para un proyecto nuevo como para actualizar uno que ya tenga una versión anterior instalada: se puede correr varias veces sin romper nada ni duplicar datos.
 
 Después, en el dashboard:
 
 - **Authentication → URL Configuration**: pon `http://localhost:5173` (y tu dominio de Vercel/Netlify) como *Site URL* y en *Redirect URLs*.
-- **Database → Replication / Publications**: confirma que la tabla `messages` está en `supabase_realtime` (la migración 007 la agrega) para que el chat llegue en tiempo real.
+- **Database → Replication / Publications**: confirma que la tabla `messages` está en `supabase_realtime` (`setup.sql` la agrega) para que el chat llegue en tiempo real.
 
 ### Cuentas de prueba
-Los 10 perfiles del seed pueden iniciar sesión con la contraseña `UniLinkDemo2026!` (ej. `sofia.alvarez@edu.uaa.mx`). Sirven para probar el chat desde el otro lado. Al final de `seed.sql` hay un bloque opcional para que todos te den "Me interesa" y así obtener matches al instante.
+Al final de `setup.sql` hay una sección **opcional y desactivada** que crea 10 estudiantes de prueba con la contraseña `UniLinkDemo2026!` (ej. `sofia.alvarez@edu.uaa.mx`), para probar matches y chat desde el otro lado. Para activarla, sigue las instrucciones de esa sección y vuelve a correr el archivo. No la actives en producción.
 
 ---
 
@@ -97,6 +92,7 @@ La app no tiene un servidor propio: el frontend habla directo con Supabase usand
 - **Descubrir**: la función `get_recommendations` filtra (misma universidad, modo activo, preferencias mutuas, sin bloqueos) y calcula la afinidad.
 - **Deslizar**: cada decisión se guarda en `swipes`. Un trigger (`handle_swipe_action`) crea el match y la conversación cuando el "Me interesa" es mutuo, y limita a 25 "Me interesa" al día en cuentas gratuitas.
 - **Chat**: los mensajes se guardan en `messages` y llegan por Realtime. Un trigger (`moderate_message`) frena el spam y descarta mensajes con términos prohibidos.
+- **Reportes**: si 3 personas distintas reportan a alguien en 7 días, su perfil se suspende automáticamente 3 días (`handle_report_threshold`).
 - **Otras funciones**: `get_my_matches`, `unmatch`, `block_user`, `mark_conversation_read` y `ensure_my_profile`.
 
 ### Fotos
@@ -114,8 +110,7 @@ src/
   lib/          Cliente de Supabase, fotos, catálogo y utilidades
   styles/       Tokens de diseño (colores, tipografía) en index.css
 supabase/
-  migrations/   Migraciones SQL en orden
-  seed.sql      Datos de prueba
+  setup.sql     Base de datos completa (un solo archivo)
 ```
 
 ---
