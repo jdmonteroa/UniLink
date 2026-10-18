@@ -54,6 +54,8 @@ export function friendlyError(err: unknown, fallback = 'Ocurrió un error inespe
   if (msg.includes('user already registered')) return 'Ese correo ya tiene cuenta. Inicia sesión.';
   if (msg.includes('database error saving new user') || msg.includes('no pertenece a una universidad'))
     return 'Tu correo no pertenece a una universidad registrada. Usa tu correo institucional.';
+  if (msg.includes('user is banned') || msg.includes('banned'))
+    return 'Tu cuenta está bloqueada por acumular sanciones. Si crees que es un error, contacta a los administradores.';
   if (msg.includes('rate limit') || msg.includes('too many requests'))
     return 'Demasiados intentos. Espera un minuto e inténtalo de nuevo.';
   if (msg.includes('could not find the function') || msg.includes('does not exist'))

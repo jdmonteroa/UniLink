@@ -557,7 +557,6 @@ BEGIN
     NEW.university_id := OLD.university_id;
     NEW.is_photo_verified := OLD.is_photo_verified;
     NEW.is_suspended := OLD.is_suspended;
-    NEW.event_ban_until := OLD.event_ban_until;
     NEW.suspended_until := OLD.suspended_until;
   END IF;
   RETURN NEW;
@@ -891,6 +890,7 @@ BEGIN
     WHERE p.university_id = my_uni
       AND p.id <> me
       AND p.onboarding_completed = TRUE
+      AND p.role = 'student' -- moderadores y administradores no participan en Descubrir
       AND p.is_paused = FALSE
       AND (p.is_suspended = FALSE OR (p.suspended_until IS NOT NULL AND p.suspended_until < NOW()))
       AND NOT EXISTS (
@@ -1669,13 +1669,11 @@ REVOKE EXECUTE ON FUNCTION public.leave_group(UUID) FROM anon;
 --
 -- Para dar permisos de moderación a alguien (una sola vez, desde el SQL Editor):
 --   UPDATE public.profiles SET role = 'moderator' WHERE id = '<uuid del usuario>';
---   (usa 'admin' si además debe poder dar bloqueos permanentes)
+--   (usa 'admin' para cuentas dedicadas a moderar; ver supabase/seed-admins.sql)
 --
 -- Análisis de imagen (SafeSearch): ver el contrato en el README, sección
 -- "Moderación de eventos". La función set_event_image_scan() la llama una Edge Function.
 -- ------------------------------------------------------------------------------
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS event_ban_until TIMESTAMPTZ;
-
 ALTER TABLE public.events ALTER COLUMN location DROP NOT NULL;
 ALTER TABLE public.events ALTER COLUMN start_time DROP NOT NULL;
 ALTER TABLE public.events ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'otro';
@@ -1697,7 +1695,7 @@ ALTER TABLE public.events ADD CONSTRAINT events_category_check
 -- Las sanciones por eventos se registran junto a las demás acciones de moderación
 ALTER TABLE public.moderation_actions DROP CONSTRAINT IF EXISTS moderation_actions_action_check;
 ALTER TABLE public.moderation_actions ADD CONSTRAINT moderation_actions_action_check
-  CHECK (action IN ('warn', 'suspend', 'ban', 'dismiss', 'event_ban'));
+  CHECK (action IN ('warn', 'suspend', 'ban', 'dismiss', 'strike'));
 ALTER TABLE public.moderation_actions ADD COLUMN IF NOT EXISTS event_id UUID REFERENCES public.events(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS public.event_reports (
@@ -1865,16 +1863,13 @@ DECLARE
   new_id UUID;
 BEGIN
   IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión para publicar.'; END IF;
-  SELECT university_id, onboarding_completed, is_suspended, suspended_until, event_ban_until INTO prof
+  SELECT university_id, onboarding_completed, is_suspended, suspended_until INTO prof
   FROM public.profiles WHERE id = me;
   IF prof.university_id IS NULL OR NOT prof.onboarding_completed THEN
     RAISE EXCEPTION 'Completa tu perfil para publicar.';
   END IF;
   IF prof.is_suspended AND (prof.suspended_until IS NULL OR prof.suspended_until > NOW()) THEN
     RAISE EXCEPTION 'Tu cuenta está suspendida y no puede publicar por ahora.';
-  END IF;
-  IF prof.event_ban_until IS NOT NULL AND prof.event_ban_until > NOW() THEN
-    RAISE EXCEPTION 'No puedes publicar eventos hasta el %.', to_char(prof.event_ban_until AT TIME ZONE 'America/Mexico_City', 'DD/MM/YYYY');
   END IF;
 
   IF char_length(ttl) < 3 OR char_length(ttl) > 80 THEN RAISE EXCEPTION 'El título debe tener entre 3 y 80 caracteres.'; END IF;
@@ -1999,7 +1994,7 @@ RETURNS TABLE (
   author_id UUID, author_name TEXT, author_career TEXT, author_semester INTEGER, author_photo TEXT,
   text_scan JSONB, image_scan JSONB,
   report_count INTEGER, report_reasons JSONB,
-  prior_rejections INTEGER, prior_sanctions INTEGER, author_ban_until TIMESTAMPTZ
+  prior_rejections INTEGER, prior_sanctions INTEGER
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
 AS $$
@@ -2015,8 +2010,7 @@ BEGIN
          (SELECT COUNT(*) FROM public.event_reports r WHERE r.event_id = e.id)::INTEGER,
          COALESCE((SELECT jsonb_agg(r.reason) FROM public.event_reports r WHERE r.event_id = e.id), '[]'::JSONB),
          (SELECT COUNT(*) FROM public.events x WHERE x.created_by = p.id AND x.status = 'rejected')::INTEGER,
-         (SELECT COUNT(*) FROM public.moderation_actions a WHERE a.target_user_id = p.id AND a.action <> 'dismiss')::INTEGER,
-         p.event_ban_until
+         (SELECT COUNT(*) FROM public.moderation_actions a WHERE a.target_user_id = p.id AND a.action = 'strike')::INTEGER
   FROM public.events e
   JOIN public.profiles p ON p.id = e.created_by
   LEFT JOIN public.careers car ON car.id = p.career_id
@@ -2030,13 +2024,61 @@ BEGIN
 END;
 $$;
 
--- p_decision: 'approve' | 'reject'.  Sanción (solo con 'reject'):
---   warn (aviso), event_ban (no publicar N días), suspend (cuenta suspendida N días),
---   ban (suspensión permanente, solo administradores).
+-- Cola de correos salientes. Cada sanción agrega una fila; una Edge Function la envía
+-- (ver README, "Correos de sanción"). Sin políticas: solo service_role y las funciones la tocan.
+CREATE TABLE IF NOT EXISTS public.email_outbox (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    to_email TEXT NOT NULL,
+    template TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    sent_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_pending ON public.email_outbox(status, created_at);
+ALTER TABLE public.email_outbox ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.email_outbox FROM anon, authenticated;
+
+-- Bloqueo permanente. Además de marcar el perfil, impide iniciar sesión (banned_until de
+-- Supabase Auth) y cierra las sesiones abiertas. Si algo de auth falla, el bloqueo del
+-- perfil se conserva y se avisa con un WARNING.
+DROP FUNCTION IF EXISTS public.block_account(UUID, TEXT);
+CREATE FUNCTION public.block_account(p_user UUID, p_reason TEXT)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  UPDATE public.profiles SET is_suspended = TRUE, suspended_until = NULL WHERE id = p_user;
+  INSERT INTO public.moderation_actions (target_user_id, action, reason) VALUES (p_user, 'ban', p_reason);
+  BEGIN
+    UPDATE auth.users SET banned_until = 'infinity' WHERE id = p_user;
+    DELETE FROM auth.sessions WHERE user_id = p_user;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'No se pudo cerrar la sesión de %: %', p_user, SQLERRM;
+  END;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.block_account(UUID, TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Cuántas sanciones lleva la persona que consulta (para avisarle en la app).
+DROP FUNCTION IF EXISTS public.my_sanction_count();
+CREATE FUNCTION public.my_sanction_count()
+RETURNS INTEGER
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT COUNT(*)::INTEGER FROM public.moderation_actions WHERE target_user_id = auth.uid() AND action = 'strike';
+$$;
+
+-- p_decision: 'approve' | 'reject'.
+-- p_sanction (solo con 'reject'): suma UNA sanción a quien publicó y le manda un correo con
+-- su conteo. Al llegar a 5 sanciones la cuenta se bloquea sola; no hay que decidirlo.
 -- Devuelve la ruta de la imagen cuando se rechaza, para que la app borre el archivo.
 DROP FUNCTION IF EXISTS public.review_event(UUID, TEXT, TEXT, TEXT, INTEGER);
+DROP FUNCTION IF EXISTS public.review_event(UUID, TEXT, TEXT, BOOLEAN);
 CREATE FUNCTION public.review_event(
-  p_event UUID, p_decision TEXT, p_note TEXT DEFAULT NULL, p_sanction TEXT DEFAULT NULL, p_days INTEGER DEFAULT NULL
+  p_event UUID, p_decision TEXT, p_note TEXT DEFAULT NULL, p_sanction BOOLEAN DEFAULT FALSE
 )
 RETURNS TEXT
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
@@ -2046,18 +2088,22 @@ DECLARE
   my_role TEXT;
   ev RECORD;
   note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
+  strikes INTEGER;
+  blocked BOOLEAN := FALSE;
+  target RECORD;
+  sanction_limit CONSTANT INTEGER := 5;
 BEGIN
   SELECT role INTO my_role FROM public.profiles WHERE id = me;
   IF my_role NOT IN ('moderator', 'admin') THEN RAISE EXCEPTION 'Solo moderadores pueden revisar publicaciones.'; END IF;
 
-  SELECT id, created_by, university_id, status, image_path INTO ev FROM public.events WHERE id = p_event;
+  SELECT id, title, created_by, university_id, status, image_path INTO ev FROM public.events WHERE id = p_event;
   IF NOT FOUND OR ev.university_id <> public.get_my_university_id() THEN RAISE EXCEPTION 'Esa publicación ya no existe.'; END IF;
   IF ev.status <> 'pending' THEN RAISE EXCEPTION 'Esta publicación ya fue revisada.'; END IF;
   IF ev.created_by = me AND my_role <> 'admin' THEN RAISE EXCEPTION 'Otra persona debe revisar tu publicación.'; END IF;
   IF p_decision NOT IN ('approve', 'reject') THEN RAISE EXCEPTION 'Decisión no válida.'; END IF;
 
   IF p_decision = 'approve' THEN
-    IF p_sanction IS NOT NULL THEN RAISE EXCEPTION 'Para sancionar primero rechaza la publicación.'; END IF;
+    IF p_sanction THEN RAISE EXCEPTION 'Para sancionar primero rechaza la publicación.'; END IF;
     UPDATE public.events SET status = 'approved', reviewed_by = me, reviewed_at = NOW(), review_note = note WHERE id = p_event;
     DELETE FROM public.event_reports WHERE event_id = p_event; -- los reportes quedan resueltos
     RETURN NULL;
@@ -2066,24 +2112,27 @@ BEGIN
   IF note IS NULL OR char_length(note) < 3 THEN RAISE EXCEPTION 'Escribe el motivo del rechazo (lo verá quien publicó).'; END IF;
   IF char_length(note) > 300 THEN RAISE EXCEPTION 'El motivo puede tener máximo 300 caracteres.'; END IF;
 
-  IF p_sanction IS NOT NULL THEN
-    IF p_sanction NOT IN ('warn', 'event_ban', 'suspend', 'ban') THEN RAISE EXCEPTION 'Sanción no válida.'; END IF;
-    IF p_sanction = 'ban' AND my_role <> 'admin' THEN RAISE EXCEPTION 'Solo un administrador puede dar un bloqueo permanente.'; END IF;
-    IF p_sanction IN ('event_ban', 'suspend') AND (p_days IS NULL OR p_days < 1 OR p_days > 365) THEN
-      RAISE EXCEPTION 'Indica la duración en días (1 a 365).';
-    END IF;
+  IF p_sanction THEN
     IF ev.created_by = me THEN RAISE EXCEPTION 'No puedes sancionarte a ti mismo.'; END IF;
 
-    IF p_sanction = 'event_ban' THEN
-      UPDATE public.profiles SET event_ban_until = NOW() + make_interval(days => p_days) WHERE id = ev.created_by;
-    ELSIF p_sanction = 'suspend' THEN
-      UPDATE public.profiles SET is_suspended = TRUE, suspended_until = NOW() + make_interval(days => p_days) WHERE id = ev.created_by;
-    ELSIF p_sanction = 'ban' THEN
-      UPDATE public.profiles SET is_suspended = TRUE, suspended_until = NULL WHERE id = ev.created_by;
+    INSERT INTO public.moderation_actions (moderator_id, target_user_id, action, reason, event_id)
+    VALUES (me, ev.created_by, 'strike', note, p_event);
+    SELECT COUNT(*) INTO strikes FROM public.moderation_actions WHERE target_user_id = ev.created_by AND action = 'strike';
+
+    IF strikes >= sanction_limit THEN
+      PERFORM public.block_account(ev.created_by, 'Bloqueo automático por acumular ' || sanction_limit || ' sanciones.');
+      blocked := TRUE;
     END IF;
 
-    INSERT INTO public.moderation_actions (moderator_id, target_user_id, action, duration_days, reason, event_id)
-    VALUES (me, ev.created_by, p_sanction, CASE WHEN p_sanction IN ('event_ban', 'suspend') THEN p_days END, note, p_event);
+    SELECT p.full_name, u.email INTO target
+    FROM public.profiles p JOIN auth.users u ON u.id = p.id WHERE p.id = ev.created_by;
+    IF target.email IS NOT NULL THEN
+      INSERT INTO public.email_outbox (to_email, template, payload)
+      VALUES (target.email, 'sancion', jsonb_build_object(
+        'name', target.full_name, 'event_title', ev.title, 'reason', note,
+        'strike_count', strikes, 'limit', sanction_limit,
+        'remaining', GREATEST(sanction_limit - strikes, 0), 'blocked', blocked));
+    END IF;
   END IF;
 
   UPDATE public.events
@@ -2112,7 +2161,8 @@ GRANT EXECUTE ON FUNCTION public.list_my_events() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.delete_event(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.report_event(UUID, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.list_moderation_queue() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.review_event(UUID, TEXT, TEXT, TEXT, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.review_event(UUID, TEXT, TEXT, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.my_sanction_count() TO authenticated;
 -- scan_text solo la usa submit_event (SECURITY DEFINER); nadie más necesita llamarla
 REVOKE EXECUTE ON FUNCTION public.scan_text(TEXT) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.submit_event(TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT) FROM anon;
@@ -2121,7 +2171,8 @@ REVOKE EXECUTE ON FUNCTION public.list_my_events() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.delete_event(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.report_event(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.list_moderation_queue() FROM anon;
-REVOKE EXECUTE ON FUNCTION public.review_event(UUID, TEXT, TEXT, TEXT, INTEGER) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.review_event(UUID, TEXT, TEXT, BOOLEAN) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.my_sanction_count() FROM anon;
 
 -- set_event_image_scan: solo service_role (nunca un usuario de la app)
 REVOKE EXECUTE ON FUNCTION public.set_event_image_scan(UUID, JSONB) FROM PUBLIC, anon, authenticated;

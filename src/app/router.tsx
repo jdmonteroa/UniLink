@@ -4,6 +4,7 @@ import { Loader2, AlertTriangle, RefreshCw, LogOut } from 'lucide-react';
 import { LoginPage } from '@/features/auth/LoginPage';
 import { DiscoverPage } from '@/features/discover/DiscoverPage';
 import { OnboardingFlow } from '@/features/onboarding/OnboardingFlow';
+import { AdminShell } from '@/features/admin/AdminShell';
 import { useAuthStore } from '@/features/auth/authStore';
 import { Wordmark } from '@/components/brand';
 
@@ -49,11 +50,37 @@ const ProfileErrorScreen: React.FC = () => {
   );
 };
 
+const BlockedScreen: React.FC = () => {
+  const { logout } = useAuthStore();
+  return (
+    <FullScreen>
+      <div className="max-w-sm w-full text-center space-y-5">
+        <Wordmark className="text-3xl" />
+        <div className="w-14 h-14 mx-auto rounded-full bg-coral text-slate-900 flex items-center justify-center rotate-6 shadow-sticker">
+          <AlertTriangle className="w-6 h-6" />
+        </div>
+        <h1 className="text-3xl font-semibold leading-tight">Tu cuenta está bloqueada</h1>
+        <p className="text-sm text-slate-500 dark:text-haze-400">
+          Se bloqueó automáticamente por acumular 5 sanciones. Si crees que es un error, contacta a los administradores de UniLink.
+        </p>
+        <button
+          onClick={() => void logout()}
+          className="w-full h-12 rounded-full text-sm font-semibold border-2 border-slate-900/15 dark:border-white/15 hover:border-slate-900 dark:hover:border-white flex items-center justify-center gap-2 transition"
+        >
+          <LogOut className="w-4 h-4" /> Salir
+        </button>
+      </div>
+    </FullScreen>
+  );
+};
+
 /**
  * Guardia principal:
  *  - mientras se restaura la sesión → pantalla de carga
  *  - error al leer el perfil → pantalla de reintento (NUNCA se manda al onboarding por error)
  *  - sin sesión → login
+ *  - cuenta bloqueada → pantalla de bloqueo
+ *  - administrador → app de administración (solo Eventos y Perfil)
  *  - onboarding pendiente → onboarding (una sola vez)
  *  - todo listo → app
  */
@@ -77,6 +104,8 @@ const AppGate: React.FC = () => {
   }
   if (isAuthenticated && profileError) return <ProfileErrorScreen />;
   if (!isAuthenticated || !user) return <LoginPage />;
+  if (user.isBlocked) return <BlockedScreen />;
+  if (user.role === 'admin') return <AdminShell />;
   if (!user.onboardingCompleted) return <OnboardingFlow />;
   return <DiscoverPage />;
 };
