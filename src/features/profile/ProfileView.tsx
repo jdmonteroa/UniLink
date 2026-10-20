@@ -4,7 +4,7 @@ import { Instagram, Edit3, Check, X, Loader2, PauseCircle, PlayCircle, Clock } f
 import { useAuthStore, formatSemester, DEFAULT_SEEKING, type ConnectionModeKey, type Seeking } from '@/features/auth/authStore';
 import { SeekingPicker } from '@/components/SeekingPicker';
 import { InstallCard } from '@/components/InstallCard';
-import { CheckBadgeIcon, BookOpenIcon, UserGroupIcon, HeartIcon } from '@/components/icons';
+import { CheckBadgeIcon, UserGroupIcon, HeartIcon } from '@/components/icons';
 import { PhotoManager } from '@/components/PhotoManager';
 import { Avatar } from '@/components/Avatar';
 import { MODE_COLOR, spring } from '@/components/brand';
@@ -21,11 +21,10 @@ const textBtn =
 const chipOn = 'bg-slate-900 text-slate-50 dark:bg-slate-50 dark:text-slate-900';
 const chipOff = 'bg-haze-100 dark:bg-ink-800 text-slate-700 dark:text-slate-300 hover:bg-haze-200 dark:hover:bg-ink-700';
 
-const MODE_ICON = { study: BookOpenIcon, friendship: UserGroupIcon, dating: HeartIcon } as const;
+const MODE_ICON = { friendship: UserGroupIcon, dating: HeartIcon } as const;
 
 const MODES: { key: ConnectionModeKey; label: string }[] = [
-  { key: 'study', label: 'Estudio' },
-  { key: 'friendship', label: 'Amistad' },
+  { key: 'friendship', label: 'Amistades' },
   { key: 'dating', label: 'Pareja' },
 ];
 

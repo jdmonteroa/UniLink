@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 export type DesignProposal = 'campus-pulse' | 'alma-mater';
-export type ConnectionMode = 'study' | 'friendship' | 'dating';
+export type ConnectionMode = 'friendship' | 'dating';
 
 interface ThemeState {
   isDarkMode: boolean;
@@ -34,7 +34,7 @@ if (typeof document !== 'undefined') applyDark(initialDark);
 export const useThemeStore = create<ThemeState>((set) => ({
   isDarkMode: initialDark,
   activeDesign: 'campus-pulse',
-  activeModePreview: 'study',
+  activeModePreview: 'friendship',
   toggleDarkMode: () =>
     set((state) => {
       const next = !state.isDarkMode;

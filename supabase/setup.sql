@@ -1211,6 +1211,68 @@ GRANT EXECUTE ON FUNCTION public.block_user(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.mark_conversation_read(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.ensure_my_profile() TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.get_recommendations(TEXT, INTEGER) FROM anon;
+
+-- ------------------------------------------------------------------------------
+-- 2.14 LISTA DE ESTUDIANTES (modo Amistad)
+-- Misma base que get_recommendations (misma universidad, preferencia mutua, sin
+-- bloqueos, sin quien ya evaluaste), pero con filtros opcionales pensados para
+-- estudios: carrera, campus, semestre, materia que cursa, interés y búsqueda por
+-- texto. Devuelve a cada persona con su foto, intereses y carrera.
+-- ------------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER);
+CREATE FUNCTION public.list_students(
+  p_mode TEXT DEFAULT 'friendship',
+  p_career UUID DEFAULT NULL,
+  p_campus UUID DEFAULT NULL,
+  p_semester INTEGER DEFAULT NULL,
+  p_subject UUID DEFAULT NULL,
+  p_interest UUID DEFAULT NULL,
+  p_query TEXT DEFAULT NULL,
+  p_limit INTEGER DEFAULT 40,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE (
+  profile_id UUID, full_name TEXT, age INTEGER, career_name TEXT, campus_name TEXT, semester INTEGER,
+  bio TEXT, is_photo_verified BOOLEAN, photos JSONB, compatibility_score INTEGER,
+  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+DECLARE
+  q TEXT := NULLIF(btrim(COALESCE(p_query, '')), '');
+BEGIN
+  IF auth.uid() IS NULL THEN RETURN; END IF;
+  IF q IS NOT NULL THEN
+    q := '%' || replace(replace(replace(lower(left(q, 60)), '\', '\\'), '%', '\%'), '_', '\_') || '%';
+  END IF;
+
+  RETURN QUERY
+  SELECT r.profile_id, r.full_name, r.age, r.career_name, r.campus_name, r.semester,
+         r.bio, r.is_photo_verified, r.photos, r.compatibility_score,
+         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests
+  FROM public.get_recommendations(p_mode, 1000) r
+  JOIN public.profiles p ON p.id = r.profile_id
+  WHERE (p_career IS NULL OR p.career_id = p_career)
+    AND (p_campus IS NULL OR p.campus_id = p_campus)
+    AND (p_semester IS NULL OR p.semester = p_semester)
+    AND (p_subject IS NULL OR EXISTS (
+          SELECT 1 FROM public.profile_subjects ps WHERE ps.profile_id = p.id AND ps.subject_id = p_subject))
+    AND (p_interest IS NULL OR EXISTS (
+          SELECT 1 FROM public.profile_interests pi WHERE pi.profile_id = p.id AND pi.interest_id = p_interest))
+    AND (q IS NULL
+         OR lower(r.full_name) LIKE q
+         OR lower(COALESCE(r.bio, '')) LIKE q
+         OR lower(COALESCE(r.career_name, '')) LIKE q
+         OR lower(r.interests::TEXT) LIKE q)
+  ORDER BY r.compatibility_score DESC, r.full_name
+  LIMIT LEAST(GREATEST(COALESCE(p_limit, 40), 1), 100)
+  OFFSET GREATEST(COALESCE(p_offset, 0), 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_my_matches() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.unmatch(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.block_user(UUID) FROM anon;

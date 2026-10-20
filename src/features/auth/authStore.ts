@@ -3,7 +3,7 @@ import type { User as AuthUser } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured, friendlyError } from '@/lib/supabaseClient';
 import { photoUrl, saveProfilePhotos, MAX_PHOTOS } from '@/lib/photos';
 
-export type ConnectionModeKey = 'study' | 'friendship' | 'dating';
+export type ConnectionModeKey = 'friendship' | 'dating';
 
 export interface AvailabilitySlot {
   weekday: number; // 0 = domingo ... 6 = sábado
@@ -168,9 +168,9 @@ export const calculateAge = (birthDateString?: string | null): number | undefine
 export const formatSemester = (semester: number | null | undefined) =>
   semester ? `${semester}.° semestre` : '';
 
-const DEFAULT_MODES: Record<ConnectionModeKey, boolean> = { study: true, friendship: true, dating: false };
+const DEFAULT_MODES: Record<ConnectionModeKey, boolean> = { friendship: true, dating: false };
 const DEFAULT_PREFS: DatingPrefs = { genders: [], minAge: 18, maxAge: null };
-export const DEFAULT_SEEKING: SeekingPrefs = { study: 'everyone', friendship: 'everyone', dating: 'everyone' };
+export const DEFAULT_SEEKING: SeekingPrefs = { friendship: 'everyone', dating: 'everyone' };
 const toHHMM = (t: string) => t.slice(0, 5);
 
 function throwIf(error: unknown, fallback: string) {
@@ -225,6 +225,7 @@ async function fetchFullProfile(authUser: AuthUser): Promise<UserProfile> {
   let datingPrefs = { ...DEFAULT_PREFS };
   const seeking = { ...DEFAULT_SEEKING };
   for (const m of modesRes.data || []) {
+    if (m.mode !== 'friendship' && m.mode !== 'dating') continue; // el modo Estudio ya no existe
     modes[m.mode as ConnectionModeKey] = Boolean(m.is_active);
     seeking[m.mode as ConnectionModeKey] = gendersToSeeking(m.pref_genders);
     if (m.mode === 'dating') {
@@ -371,7 +372,7 @@ const demoUser = (): UserProfile => ({
   interestIds: ['Programación', 'Café de Especialidad', 'Música Indie', 'Videojuegos'],
   interests: ['Programación', 'Café de Especialidad', 'Música Indie', 'Videojuegos'],
   availability: [{ weekday: 2, start: '16:00', end: '19:00' }],
-  connectionModes: { study: true, friendship: true, dating: true },
+  connectionModes: { friendship: true, dating: true },
   datingPrefs: { ...DEFAULT_PREFS },
   seeking: { ...DEFAULT_SEEKING },
   isVerified: true,

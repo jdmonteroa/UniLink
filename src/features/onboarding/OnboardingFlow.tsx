@@ -19,7 +19,7 @@ import {
   DEFAULT_SEEKING,
 } from '@/features/auth/authStore';
 import { SeekingPicker } from '@/components/SeekingPicker';
-import { ArrowRightIcon, BookOpenIcon, UserGroupIcon, HeartIcon, CheckIcon } from '@/components/icons';
+import { ArrowRightIcon, UserGroupIcon, HeartIcon, CheckIcon } from '@/components/icons';
 import { Wordmark, Highlight, MODE_COLOR, spring } from '@/components/brand';
 import { PhotoManager } from '@/components/PhotoManager';
 import { DEMO_CATALOG, loadCatalog, type Catalog } from '@/lib/catalog';
@@ -96,7 +96,7 @@ export const OnboardingFlow: React.FC = () => {
   const [blocks, setBlocks] = useState<Set<string>>(() => slotsToBlocks(user?.availability || []));
   const [bio, setBio] = useState(user?.bio || '');
   const [modes, setModes] = useState<Record<ConnectionModeKey, boolean>>(
-    user?.connectionModes || { study: true, friendship: true, dating: false }
+    user?.connectionModes || { friendship: true, dating: false }
   );
   const [prefs, setPrefs] = useState<DatingPrefs>(user?.datingPrefs || { genders: [], minAge: 18, maxAge: null });
   const [seeking, setSeeking] = useState<SeekingPrefs>(user?.seeking || DEFAULT_SEEKING);
@@ -419,7 +419,7 @@ export const OnboardingFlow: React.FC = () => {
             {/* PASO 3: Materias */}
             {step === 3 && (
               <>
-                <StepHeader title={<>Tus <Highlight>materias</Highlight></>} subtitle="Las que cursas este semestre, para encontrar compañeros de estudio" />
+                <StepHeader title={<>Tus <Highlight>materias</Highlight></>} subtitle="Las que cursas este semestre, para que te encuentren compañeros que llevan lo mismo" />
                 {careerSubjects.length === 0 ? (
                   <p className="text-sm text-slate-500 dark:text-haze-400">Aún no hay materias registradas para tu carrera. Puedes continuar.</p>
                 ) : (
@@ -467,7 +467,7 @@ export const OnboardingFlow: React.FC = () => {
               <>
                 <StepHeader
                   title={<>¿Cuándo estás <Highlight>libre</Highlight>?</>}
-                  subtitle="Toca los bloques en los que sueles tener tiempo. Es opcional, pero mejora tus matches de estudio."
+                  subtitle="Toca los bloques en los que sueles tener tiempo. Es opcional, pero ayuda a encontrar a quien coincide contigo."
                 />
                 <div className="overflow-x-auto -mx-1">
                   <table className="w-full text-xs border-separate border-spacing-1">
@@ -554,8 +554,7 @@ export const OnboardingFlow: React.FC = () => {
                 <div className="space-y-3">
                   {(
                     [
-                      { key: 'study', title: 'Modo Estudio', desc: 'Compañeros para materias, tareas y biblioteca', Icon: BookOpenIcon },
-                      { key: 'friendship', title: 'Modo Amistad', desc: 'Amigos para café, cineclub y salidas', Icon: UserGroupIcon },
+                      { key: 'friendship', title: 'Amistades', desc: 'Encuentra compañeros por carrera, materias y lo que les gusta hacer', Icon: UserGroupIcon },
                       { key: 'dating', title: 'Modo Pareja', desc: 'Citas seguras entre estudiantes verificados', Icon: HeartIcon },
                     ] as const
                   ).map(({ key, title, desc, Icon }) => {

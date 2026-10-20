@@ -91,7 +91,7 @@ const demoMatches = (): ChatMatch[] => [
   {
     matchId: 'demo-match-1',
     conversationId: 'demo-conv-1',
-    mode: 'study',
+    mode: 'friendship',
     matchedAt: new Date(Date.now() - 3600_000).toISOString(),
     user: {
       id: 'demo-sofia',
@@ -199,7 +199,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const matches: ChatMatch[] = ((data || []) as MatchRow[]).map((r) => ({
       matchId: r.match_id,
       conversationId: r.conversation_id,
-      mode: r.mode,
+      // Los matches viejos del modo Estudio (ya eliminado) se muestran como Amistad
+      mode: r.mode === 'dating' ? 'dating' : 'friendship',
       matchedAt: r.matched_at,
       user: {
         id: r.other_id,

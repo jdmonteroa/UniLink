@@ -9,6 +9,7 @@ import { photoUrl } from '@/lib/photos';
 import { ChatView } from '@/features/chat/ChatView';
 import { ProfileView } from '@/features/profile/ProfileView';
 import { GroupsView } from '@/features/groups/GroupsView';
+import { FriendsList } from '@/features/discover/FriendsList';
 import { useGroupsStore } from '@/features/groups/groupsStore';
 import { EventsView } from '@/features/events/EventsView';
 import { useEventsStore } from '@/features/events/eventsStore';
@@ -72,7 +73,7 @@ interface RecommendationRow {
   schedule_overlap: string | null;
 }
 
-const MODE_LABEL: Record<ConnectionMode, string> = { study: 'Modo Estudio', friendship: 'Modo Amistad', dating: 'Modo Pareja' };
+const MODE_LABEL: Record<ConnectionMode, string> = { friendship: 'Amistades', dating: 'Pareja' };
 
 // Perfiles de ejemplo solo para el modo demo
 const DEMO_PROFILES: DiscoverStudent[] = [
@@ -178,12 +179,14 @@ export const DiscoverPage: React.FC = () => {
   }, [isDemo, mode]);
 
   useEffect(() => {
+    // Amistades se muestra como lista (FriendsList); el mazo de tarjetas es solo de Pareja
+    if (mode !== 'dating') return;
     if (modeActive) void fetchProfiles();
     else {
       setProfiles([]);
       setIsLoading(false);
     }
-  }, [fetchProfiles, modeActive, reloadKey]);
+  }, [fetchProfiles, modeActive, mode, reloadKey]);
 
   useEffect(() => {
     if (!notice) return;
@@ -350,12 +353,17 @@ export const DiscoverPage: React.FC = () => {
     if (matchId) await openMatchById(matchId);
   };
 
+  const handleFriendMatch = (student: DiscoverStudent, matchId?: string) => {
+    confetti({ particleCount: 90, spread: 70, origin: { y: 0.65 }, colors: CONFETTI_COLORS, disableForReducedMotion: true });
+    setMatchModal({ student, matchId });
+    if (matchId) void loadMatches();
+  };
+
   const modes: { id: ConnectionMode; label: string; icon: typeof BookOpenIcon }[] = [
-    { id: 'study', label: 'Estudio', icon: BookOpenIcon },
-    { id: 'friendship', label: 'Amistad', icon: UserGroupIcon },
+    { id: 'friendship', label: 'Amistades', icon: UserGroupIcon },
     { id: 'dating', label: 'Pareja', icon: HeartIcon },
   ];
-  const ActiveModeIcon = modes.find((m) => m.id === mode)?.icon ?? BookOpenIcon;
+  const ActiveModeIcon = modes.find((m) => m.id === mode)?.icon ?? UserGroupIcon;
 
   const emptyCard = (content: React.ReactNode) => (
     <motion.div
@@ -459,7 +467,7 @@ export const DiscoverPage: React.FC = () => {
               scrolled ? 'opacity-100' : 'opacity-0'
             }`}
           />
-          <div className="grid grid-cols-3 p-1 rounded-full bg-haze-100 dark:bg-ink-850 shadow-soft-sm" role="radiogroup" aria-label="Modo de conexión">
+          <div className="grid grid-cols-2 p-1 rounded-full bg-haze-100 dark:bg-ink-850 shadow-soft-sm" role="radiogroup" aria-label="Modo de conexión">
             {modes.map((m) => {
               const Icon = m.icon;
               const on = mode === m.id;
@@ -506,6 +514,15 @@ export const DiscoverPage: React.FC = () => {
             )}
           </AnimatePresence>
 
+          {mode === 'friendship' ? (
+            <FriendsList
+              active={modeActive}
+              onGoProfile={() => setActiveTab('profile')}
+              onMatch={handleFriendMatch}
+              onNotice={setNotice}
+            />
+          ) : (
+          <>
           <div className="relative flex-1 flex flex-col">
             {!modeActive ? (
               emptyCard(
@@ -823,6 +840,8 @@ export const DiscoverPage: React.FC = () => {
                 </motion.button>
               </motion.span>
             </div>
+          )}
+          </>
           )}
         </main>
       )}
