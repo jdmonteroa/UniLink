@@ -10,6 +10,9 @@ import { ChatView } from '@/features/chat/ChatView';
 import { ProfileView } from '@/features/profile/ProfileView';
 import { GroupsView } from '@/features/groups/GroupsView';
 import { FriendsList } from '@/features/discover/FriendsList';
+import { ConnectionsView } from '@/features/connections/ConnectionsView';
+import { useConnectionsStore, attentionCount } from '@/features/connections/connectionsStore';
+import { CHAT_ENABLED } from '@/lib/features';
 import { useGroupsStore } from '@/features/groups/groupsStore';
 import { EventsView } from '@/features/events/EventsView';
 import { useEventsStore } from '@/features/events/eventsStore';
@@ -123,6 +126,10 @@ export const DiscoverPage: React.FC = () => {
 
   const modeActive = user?.connectionModes[mode] ?? false;
   const unreadTotal = matches.reduce((sum, m) => sum + m.unreadCount, 0);
+  // Sin chat: el puntito de Matches avisa de encuentros que esperan tu respuesta
+  const { connections, loadConnections, setOpenMatchId } = useConnectionsStore();
+  const matchesDot = CHAT_ENABLED ? unreadTotal > 0 : attentionCount(connections) > 0;
+  const refreshMatches = () => void (CHAT_ENABLED ? loadMatches() : loadConnections());
   const pendingGroupRequests = useGroupsStore((s) => s.groups.reduce((sum, g) => sum + g.pendingRequests, 0));
   const loadGroups = useGroupsStore((s) => s.loadGroups);
   useEffect(() => {
@@ -136,8 +143,9 @@ export const DiscoverPage: React.FC = () => {
 
   // Carga los matches al entrar (para el puntito de "nuevos mensajes")
   useEffect(() => {
-    void loadMatches();
-  }, [loadMatches]);
+    if (CHAT_ENABLED) void loadMatches();
+    else void loadConnections();
+  }, [loadMatches, loadConnections]);
 
   const fetchProfiles = useCallback(async () => {
     setIsLoading(true);
@@ -282,7 +290,7 @@ export const DiscoverPage: React.FC = () => {
         if (matchId) {
           confetti({ particleCount: 90, spread: 70, origin: { y: 0.65 }, colors: CONFETTI_COLORS, disableForReducedMotion: true });
           setMatchModal({ student, matchId });
-          void loadMatches();
+          refreshMatches();
         }
       }
     })();
@@ -350,13 +358,15 @@ export const DiscoverPage: React.FC = () => {
     const matchId = matchModal?.matchId;
     setMatchModal(null);
     setActiveTab('chat');
-    if (matchId) await openMatchById(matchId);
+    if (!matchId) return;
+    if (CHAT_ENABLED) await openMatchById(matchId);
+    else setOpenMatchId(matchId);
   };
 
   const handleFriendMatch = (student: DiscoverStudent, matchId?: string) => {
     confetti({ particleCount: 90, spread: 70, origin: { y: 0.65 }, colors: CONFETTI_COLORS, disableForReducedMotion: true });
     setMatchModal({ student, matchId });
-    if (matchId) void loadMatches();
+    if (matchId) refreshMatches();
   };
 
   const modes: { id: ConnectionMode; label: string; icon: typeof BookOpenIcon }[] = [
@@ -435,7 +445,11 @@ export const DiscoverPage: React.FC = () => {
         className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain flex flex-col">
       {activeTab === 'chat' && (
         <main className="max-w-md w-full mx-auto px-4 py-4 flex-1 min-h-0 flex flex-col">
-          <ChatView onBackToDiscover={() => setActiveTab('discover')} />
+          {CHAT_ENABLED ? (
+            <ChatView onBackToDiscover={() => setActiveTab('discover')} />
+          ) : (
+            <ConnectionsView onBackToDiscover={() => setActiveTab('discover')} />
+          )}
         </main>
       )}
 
@@ -872,7 +886,7 @@ export const DiscoverPage: React.FC = () => {
               >
                 <span className="relative">
                   <Icon className="w-5.5 h-5.5" strokeWidth={on ? 2.25 : 2} />
-                  {((id === 'chat' && unreadTotal > 0) || (id === 'groups' && pendingGroupRequests > 0) || (id === 'events' && pendingEventReviews > 0)) && (
+                  {((id === 'chat' && matchesDot) || (id === 'groups' && pendingGroupRequests > 0) || (id === 'events' && pendingEventReviews > 0)) && (
                     <span className="absolute -top-0.5 -right-1 w-2.5 h-2.5 rounded-full bg-brand-600 ring-2 ring-haze-50 dark:ring-ink-950" />
                   )}
                 </span>
@@ -938,7 +952,7 @@ export const DiscoverPage: React.FC = () => {
                   onClick={() => void handleGoToChat()}
                   className="w-full h-14 rounded-full bg-brand-600 hover:bg-brand-700 text-white font-semibold flex items-center justify-center gap-2 shadow-glow-brand transition hover:-translate-y-0.5 active:scale-[0.97]"
                 >
-                  <MessageSquare className="w-4 h-4" /> Escribirle a {matchModal.student.name.split(' ')[0]}
+                  <MessageSquare className="w-4 h-4" /> {CHAT_ENABLED ? `Escribirle a ${matchModal.student.name.split(' ')[0]}` : 'Proponer un encuentro'}
                 </button>
                 <button
                   type="button"
@@ -949,7 +963,7 @@ export const DiscoverPage: React.FC = () => {
                 </button>
               </div>
               <p className="text-xs text-slate-500 dark:text-haze-400 flex items-center justify-center gap-1.5">
-                <Instagram className="w-3.5 h-3.5" /> Su Instagram aparece en el chat si lo compartió.
+                <Instagram className="w-3.5 h-3.5" /> {CHAT_ENABLED ? 'Su Instagram aparece en el chat si lo compartió.' : 'Su Instagram aparece cuando acepten un encuentro.'}
               </p>
             </motion.div>
           </motion.div>
