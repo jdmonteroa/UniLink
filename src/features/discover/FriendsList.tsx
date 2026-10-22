@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, SlidersHorizontal, Heart, X, GraduationCap, Loader2, RefreshCw, AlertCircle, Users } from 'lucide-react';
+import { Search, SlidersHorizontal, Handshake, X, GraduationCap, Loader2, RefreshCw, AlertCircle, Users } from 'lucide-react';
 import { useAuthStore, formatSemester } from '@/features/auth/authStore';
 import { supabase, friendlyError } from '@/lib/supabaseClient';
 import { photoUrl } from '@/lib/photos';
@@ -165,7 +165,7 @@ const FriendRow: React.FC<{ friend: Friend; busy: boolean; onLike: () => void; o
             aria-label={`Me interesa ${first}`}
             title="Me interesa"
           >
-            {busy ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <Heart className="w-5 h-5 fill-current" />}
+            {busy ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <Handshake className="w-5 h-5" strokeWidth={2.25} />}
           </motion.button>
           <button
             onClick={onHide}

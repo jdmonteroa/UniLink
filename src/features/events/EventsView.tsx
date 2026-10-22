@@ -12,7 +12,7 @@ import {
   type ReportReason,
   SANCTION_LIMIT,
 } from '@/features/events/eventsStore';
-import { EVENT_BUCKET, removeStoredPhotos, uploadProfilePhoto } from '@/lib/photos';
+import { EVENT_BUCKET, photoUrl, removeStoredPhotos, uploadProfilePhoto } from '@/lib/photos';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { Highlight } from '@/components/brand';
 import { ModerationQueue } from '@/features/events/ModerationQueue';
@@ -183,11 +183,17 @@ const EventForm: React.FC<{ onDone: () => void; onCancel: () => void }> = ({ onD
   const [location, setLocation] = useState('');
   const [startLocal, setStartLocal] = useState('');
   const [imagePath, setImagePath] = useState<string | null>(null);
+  // Vista previa local: se muestra al instante, sin esperar a que la imagen suba y vuelva por la red
+  const [localPreview, setLocalPreview] = useState<string | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useNotice();
   const fileRef = useRef<HTMLInputElement>(null);
   const uploaded = useRef<string[]>([]); // para no dejar archivos huérfanos al cancelar
+  const previewRef = useRef<string | null>(null);
+  previewRef.current = localPreview;
+  useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current); }, []);
 
   if (!user) return null;
 
@@ -204,6 +210,11 @@ const EventForm: React.FC<{ onDone: () => void; onCancel: () => void }> = ({ onD
       const path = isDemo ? URL.createObjectURL(file) : await uploadProfilePhoto(user.id, file, EVENT_BUCKET);
       uploaded.current.push(path);
       setImagePath(path);
+      setPreviewFailed(false);
+      setLocalPreview((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(file);
+      });
     } catch (err) {
       setNotice({ kind: 'error', text: err instanceof Error ? err.message : 'No se pudo subir la imagen.' });
     } finally {
@@ -212,6 +223,7 @@ const EventForm: React.FC<{ onDone: () => void; onCancel: () => void }> = ({ onD
     }
   };
 
+  const shownImage = localPreview ?? (imagePath ? photoUrl(imagePath, EVENT_BUCKET) : '');
   const input = { title, description, category, location, startLocal, imagePath };
   const problem = validateEventInput(input);
 
@@ -278,28 +290,64 @@ const EventForm: React.FC<{ onDone: () => void; onCancel: () => void }> = ({ onD
         <textarea id="ev-desc" rows={4} maxLength={MAX_TEXT} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="De qué trata, quién puede ir, qué llevar…" className={inputCls} />
       </div>
 
-      <div className="flex items-center gap-4">
-        <EventThumb title={title || 'E'} category={category} imageUrl={imagePath || ''} className="w-24 h-24 rounded-3xl text-3xl shrink-0" />
-        <div className="space-y-2">
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => void pickImage(e.target.files?.[0])} />
-          <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className={outlineBtn}>
-            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
-            {imagePath ? 'Cambiar imagen' : 'Agregar imagen'}
+      <div className="space-y-3">
+        <span className={labelCls}>Imagen <span className="font-normal text-slate-500 dark:text-haze-400">(opcional si escribes un texto)</span></span>
+        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => void pickImage(e.target.files?.[0])} />
+
+        {shownImage ? (
+          <figure className="rounded-3xl overflow-hidden bg-haze-100 dark:bg-ink-800">
+            {previewFailed ? (
+              <p className="p-6 text-sm text-center text-slate-600 dark:text-haze-300">
+                Tu navegador no puede mostrar esta imagen, pero ya se subió y se enviará a revisión.
+              </p>
+            ) : (
+              <img
+                src={shownImage}
+                alt="Vista previa de la imagen de tu publicación"
+                onError={() => setPreviewFailed(true)}
+                className="w-full max-h-80 object-contain"
+              />
+            )}
+            <figcaption className="px-4 py-2 text-xs text-slate-500 dark:text-haze-400 bg-white/60 dark:bg-ink-850/60">
+              Así se verá tu imagen. Un moderador la revisará antes de publicarla.
+            </figcaption>
+          </figure>
+        ) : (
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="w-full h-36 rounded-3xl border-2 border-dashed border-slate-900/15 dark:border-white/15 hover:border-slate-900/40 dark:hover:border-white/40 flex flex-col items-center justify-center gap-2 text-sm font-semibold text-slate-600 dark:text-haze-300 transition disabled:opacity-60"
+          >
+            {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ImagePlus className="w-5 h-5" />}
+            {uploading ? 'Subiendo imagen…' : 'Toca para agregar una imagen'}
           </button>
-          {imagePath && (
+        )}
+
+        {shownImage && (
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className={outlineBtn}>
+              {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
+              Cambiar imagen
+            </button>
             <button
               type="button"
               onClick={() => {
                 discard(null);
                 uploaded.current = [];
                 setImagePath(null);
+                setPreviewFailed(false);
+                setLocalPreview((prev) => {
+                  if (prev) URL.revokeObjectURL(prev);
+                  return null;
+                });
               }}
-              className="block text-sm font-semibold text-slate-500 dark:text-haze-400 hover:text-rose-600"
+              className="text-sm font-semibold text-slate-500 dark:text-haze-400 hover:text-rose-600"
             >
               Quitar imagen
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-4">
