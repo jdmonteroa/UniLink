@@ -9,10 +9,10 @@ import {
   MoonIcon,
   ArrowRightIcon,
   ShieldCheckIcon,
+  BookOpenIcon,
   UserGroupIcon,
-  HeartIcon,
 } from '@/components/icons';
-import { CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Loader2, UsersRound } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Wordmark, Highlight, STICKER } from '@/components/brand';
 import { DownloadAppButton } from '@/components/DownloadAppButton';
@@ -23,7 +23,7 @@ import { isRunningAsApp } from '@/lib/android';
   Base de DESIGN.md (papel hueso / carbón, tinta / tiza, Crimson Academic) +
   una paleta de stickers para darle juventud: girasol, menta y coral.
   El carmesí sigue siendo el único color de ACCIÓN; los stickers solo decoran
-  y nombran los dos modos reales de la app (Amistades y Pareja).
+  el saludo (Estudio, Amistades y Comunidad).
 */
 
 const C = STICKER;
@@ -44,10 +44,11 @@ const fieldIdle =
   'border-[#1C1C1E]/10 dark:border-white/10 hover:border-[#1C1C1E]/25 dark:hover:border-white/20 focus:border-[#1C1C1E] dark:focus:border-[#F9F9FB] focus:bg-white dark:focus:bg-white/[0.07]';
 const labelCls = 'block mb-2 text-sm font-semibold';
 
-/* Stickers de los dos modos de conexión */
+/* Stickers que decoran el saludo */
 const stickers = [
-  { label: 'Amistades', Icon: UserGroupIcon, bg: C.sun, rotate: -4 },
-  { label: 'Pareja', Icon: HeartIcon, bg: C.coral, rotate: 3 },
+  { label: 'Estudio', Icon: BookOpenIcon, bg: C.mint, rotate: -6 },
+  { label: 'Amistades', Icon: UserGroupIcon, bg: C.sun, rotate: 4 },
+  { label: 'Comunidad', Icon: UsersRound, bg: C.coral, rotate: -3 },
 ];
 
 export const LoginPage: React.FC = () => {
@@ -299,6 +300,7 @@ export const LoginPage: React.FC = () => {
             <div>
               <label htmlFor="login-email" className={cn(labelCls, 'flex items-center justify-between')}>
                 <span>Correo institucional</span>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">@edu.uaa.mx</span>
               </label>
               <div className="relative">
                 <input
@@ -306,7 +308,7 @@ export const LoginPage: React.FC = () => {
                   type="email"
                   autoComplete="email"
                   required
-                  placeholder="tu.usuario@tu-universidad.edu"
+                  placeholder="tu.usuario@edu.uaa.mx"
                   value={email}
                   aria-invalid={hasTypedAt && !isDomainValid}
                   aria-describedby={email.length > 0 ? 'login-email-hint' : undefined}
@@ -350,7 +352,7 @@ export const LoginPage: React.FC = () => {
                   ) : (
                     <span className="text-rose-700 dark:text-rose-400 flex items-center gap-1.5">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                      <span>Usa el correo institucional de tu universidad</span>
+                      <span>Usa tu correo @edu.uaa.mx o @alumnos.uaa.mx</span>
                     </span>
                   )}
                 </p>
