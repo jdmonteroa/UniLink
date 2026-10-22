@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { User as AuthUser } from '@supabase/supabase-js';
+import { passwordProblem } from '@/lib/password';
 import { supabase, isSupabaseConfigured, friendlyError } from '@/lib/supabaseClient';
 import { photoUrl, saveProfilePhotos, MAX_PHOTOS } from '@/lib/photos';
 
@@ -499,9 +500,8 @@ export const useAuthStore = create<AuthState>((set, get) => {
         return fail(`Solo se permiten correos institucionales (@${ALLOWED_DOMAINS.join(' o @')}).`);
       }
       if (fullName.trim().length < 3) return fail('Escribe tu nombre completo.');
-      if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
-        return fail('La contraseña debe tener al menos 8 caracteres, con letras y números.');
-      }
+      const passwordIssue = passwordProblem(password);
+      if (passwordIssue) return fail(passwordIssue);
 
       try {
         const { data, error } = await supabase.auth.signUp({

@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { useAuthStore, isAllowedInstitutionalEmail } from '@/features/auth/authStore';
+import { useAuthStore, isAllowedInstitutionalEmail, ALLOWED_DOMAINS } from '@/features/auth/authStore';
 import { isSupabaseConfigured } from '@/lib/supabaseClient';
 import { useThemeStore } from '@/features/theme/themeStore';
 import {
@@ -12,10 +12,11 @@ import {
   BookOpenIcon,
   UserGroupIcon,
 } from '@/components/icons';
-import { CheckCircle2, AlertCircle, Loader2, UsersRound } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Loader2, UsersRound, ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Wordmark, Highlight, STICKER } from '@/components/brand';
 import { DownloadAppButton } from '@/components/DownloadAppButton';
+import { requestPasswordReset } from '@/features/auth/passwordReset';
 import { isRunningAsApp } from '@/lib/android';
 
 /*
@@ -64,6 +65,19 @@ export const LoginPage: React.FC = () => {
   const [name, setName] = useState('');
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
+  // "Olvidé mi contraseña": se abre también con /?recuperar=1 (desde un enlace vencido)
+  const [isForgot, setIsForgot] = useState(
+    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('recuperar')
+  );
+  const [forgotError, setForgotError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [cooldown, setCooldown] = useState(0); // segundos antes de poder reenviar el correo
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
+
   // Verificación en tiempo real del dominio
   const isDomainValid = isAllowedInstitutionalEmail(email);
   const needsConfirmation = Boolean(error && error.toLowerCase().includes('confirmas tu correo'));
@@ -73,6 +87,24 @@ export const LoginPage: React.FC = () => {
     e.preventDefault();
     clearError();
     setSuccessNotice(null);
+
+    if (isForgot) {
+      setForgotError(null);
+      if (!isDomainValid) {
+        setForgotError(`Solo se permiten correos institucionales (@${ALLOWED_DOMAINS.join(' o @')}).`);
+        return;
+      }
+      setSending(true);
+      const res = await requestPasswordReset(email);
+      setSending(false);
+      if (res.success) {
+        setSuccessNotice(res.message || null);
+        setCooldown(60);
+      } else {
+        setForgotError(res.message || 'No se pudo enviar el correo.');
+      }
+      return;
+    }
 
     if (isRegister) {
       const res = await registerWithSupabase(email, password, name);
@@ -102,6 +134,23 @@ export const LoginPage: React.FC = () => {
     clearError();
     setSuccessNotice(null);
   };
+
+  const openForgot = () => {
+    setIsRegister(false);
+    setIsForgot(true);
+    clearError();
+    setSuccessNotice(null);
+    setForgotError(null);
+  };
+
+  const closeForgot = () => {
+    setIsForgot(false);
+    setSuccessNotice(null);
+    setForgotError(null);
+    setCooldown(0);
+  };
+
+  const shownError = isForgot ? forgotError : error;
 
   return (
     <div
@@ -168,7 +217,7 @@ export const LoginPage: React.FC = () => {
 
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={isRegister ? 'register' : 'login'}
+              key={isForgot ? 'forgot' : isRegister ? 'register' : 'login'}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
@@ -180,13 +229,15 @@ export const LoginPage: React.FC = () => {
                   softSerif
                 )}
               >
-                {isRegister ? 'Tu gente ya está ' : 'Qué bueno verte '}
-                <Highlight>{isRegister ? 'en el campus' : 'otra vez'}</Highlight>
+                {isForgot ? 'Recupera tu ' : isRegister ? 'Tu gente ya está ' : 'Qué bueno verte '}
+                <Highlight>{isForgot ? 'acceso' : isRegister ? 'en el campus' : 'otra vez'}</Highlight>
               </h1>
               <p className={cn('mt-6 max-w-[38ch] text-base sm:text-lg leading-relaxed', muted)}>
-                {isRegister
-                  ? 'Conecta con estudiantes de tu universidad.'
-                  : 'Ingresa con tu correo institucional y sigue donde te quedaste.'}
+                {isForgot
+                  ? 'Escribe tu correo institucional y te enviamos un enlace para crear una contraseña nueva.'
+                  : isRegister
+                    ? 'Conecta con estudiantes de tu universidad.'
+                    : 'Ingresa con tu correo institucional y sigue donde te quedaste.'}
               </p>
             </motion.div>
           </AnimatePresence>
@@ -194,7 +245,17 @@ export const LoginPage: React.FC = () => {
 
         {/* Formulario */}
         <section className="lg:col-span-5 lg:col-start-8 w-full max-w-md lg:max-w-none">
-          {/* Iniciar sesión / Crear cuenta */}
+          {isForgot ? (
+            <button
+              type="button"
+              onClick={closeForgot}
+              className={cn('inline-flex items-center gap-1.5 text-sm font-semibold', muted, 'hover:text-[#1C1C1E] dark:hover:text-[#F9F9FB] transition-colors', focusRing)}
+            >
+              <ArrowLeft className="w-4 h-4" /> Volver a iniciar sesión
+            </button>
+          ) : (
+            <>
+              {/* Iniciar sesión / Crear cuenta */}
           <div
             role="tablist"
             aria-label="Tipo de acceso"
@@ -229,17 +290,19 @@ export const LoginPage: React.FC = () => {
               </button>
             ))}
           </div>
+            </>
+          )}
 
           {/* Avisos */}
           <div className="mt-5 space-y-3 empty:hidden">
-            {error && (
+            {shownError && (
               <div
                 role="alert"
                 className="p-3.5 rounded-lg bg-rose-100 dark:bg-rose-950/50 text-rose-900 dark:text-rose-200 text-sm flex items-start gap-2"
               >
                 <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                <span>{error}</span>
-                {needsConfirmation && (
+                <span>{shownError}</span>
+                {needsConfirmation && !isForgot && (
                   <button
                     type="button"
                     onClick={handleResend}
@@ -359,6 +422,7 @@ export const LoginPage: React.FC = () => {
               )}
             </div>
 
+            {!isForgot && (
             <div>
               <label htmlFor="login-password" className={labelCls}>
                 Contraseña
@@ -374,12 +438,24 @@ export const LoginPage: React.FC = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 className={cn(fieldCls, fieldIdle)}
               />
+              {!isRegister && (
+                <div className="mt-2 text-right">
+                  <button
+                    type="button"
+                    onClick={openForgot}
+                    className={cn('text-sm font-semibold underline underline-offset-4 hover:text-[#A30021] dark:hover:text-[#F0607A] transition-colors', focusRing)}
+                  >
+                    ¿Olvidaste tu contraseña?
+                  </button>
+                </div>
+              )}
             </div>
+            )}
 
             {/* Acción principal */}
             <motion.button
               type="submit"
-              disabled={isLoading || (email.length > 0 && !isDomainValid)}
+              disabled={isLoading || sending || (email.length > 0 && !isDomainValid) || (isForgot && (email.length === 0 || cooldown > 0))}
               whileHover={reduceMotion ? undefined : { y: -2 }}
               whileTap={{ scale: 0.97, y: 0 }}
               transition={spring}
@@ -391,14 +467,24 @@ export const LoginPage: React.FC = () => {
                 focusRing
               )}
             >
-              {isLoading ? (
+              {isLoading || sending ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Verificando...</span>
+                  <span>{isForgot ? 'Enviando...' : 'Verificando...'}</span>
                 </>
               ) : (
                 <>
-                  <span>{isRegister ? 'Crear mi cuenta' : 'Entrar'}</span>
+                  <span>
+                    {isForgot
+                      ? cooldown > 0
+                        ? `Reenviar en ${cooldown} s`
+                        : successNotice
+                          ? 'Reenviar enlace'
+                          : 'Enviar enlace'
+                      : isRegister
+                        ? 'Crear mi cuenta'
+                        : 'Entrar'}
+                  </span>
                   <ArrowRightIcon className="w-4.5 h-4.5 transition-transform duration-200 group-hover:translate-x-1" />
                 </>
               )}
