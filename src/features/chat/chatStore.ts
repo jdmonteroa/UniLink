@@ -97,7 +97,7 @@ const demoMatches = (): ChatMatch[] => [
       id: 'demo-sofia',
       name: 'Sofía Álvarez',
       career: 'Ingeniería Biomédica',
-      campus: 'Campus Central UAA',
+      campus: 'Campus Central',
       avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80',
       instagramHandle: 'sofia.alvarez_bio',
       verified: true,

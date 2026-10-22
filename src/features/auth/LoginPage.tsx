@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useAuthStore, isAllowedInstitutionalEmail } from '@/features/auth/authStore';
 import { isSupabaseConfigured } from '@/lib/supabaseClient';
@@ -184,8 +184,8 @@ export const LoginPage: React.FC = () => {
               </h1>
               <p className={cn('mt-6 max-w-[38ch] text-base sm:text-lg leading-relaxed', muted)}>
                 {isRegister
-                  ? 'Conecta con la comunidad de Campus Central y Campus Sur.'
-                  : 'Ingresa con tu correo institucional @edu.uaa.mx y sigue donde te quedaste.'}
+                  ? 'Conecta con estudiantes de tu universidad.'
+                  : 'Ingresa con tu correo institucional y sigue donde te quedaste.'}
               </p>
             </motion.div>
           </AnimatePresence>
@@ -299,7 +299,6 @@ export const LoginPage: React.FC = () => {
             <div>
               <label htmlFor="login-email" className={cn(labelCls, 'flex items-center justify-between')}>
                 <span>Correo institucional</span>
-                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">@edu.uaa.mx</span>
               </label>
               <div className="relative">
                 <input
@@ -307,7 +306,7 @@ export const LoginPage: React.FC = () => {
                   type="email"
                   autoComplete="email"
                   required
-                  placeholder="tu.usuario@edu.uaa.mx"
+                  placeholder="tu.usuario@tu-universidad.edu"
                   value={email}
                   aria-invalid={hasTypedAt && !isDomainValid}
                   aria-describedby={email.length > 0 ? 'login-email-hint' : undefined}
@@ -346,12 +345,12 @@ export const LoginPage: React.FC = () => {
                 <p id="login-email-hint" className="mt-2 text-sm flex items-center gap-1.5">
                   {isDomainValid ? (
                     <span className="text-emerald-700 dark:text-emerald-400 font-medium">
-                      Correo institucional válido. ¡Eres de la UAA!
+                      Correo institucional válido.
                     </span>
                   ) : (
                     <span className="text-rose-700 dark:text-rose-400 flex items-center gap-1.5">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                      <span>Usa tu correo @edu.uaa.mx o @alumnos.uaa.mx</span>
+                      <span>Usa el correo institucional de tu universidad</span>
                     </span>
                   )}
                 </p>
@@ -406,15 +405,13 @@ export const LoginPage: React.FC = () => {
 
           <p className={cn('mt-6 flex items-center justify-center gap-2 text-sm text-center', muted)}>
             <ShieldCheckIcon className="w-4 h-4 shrink-0" />
-            <span>Solo alumnos de la UAA pueden entrar</span>
+            <span>Solo estudiantes con correo institucional pueden entrar</span>
           </p>
         </section>
       </main>
 
       <footer className={cn('w-full max-w-6xl mx-auto px-5 sm:px-8 pb-6 text-xs', muted)}>
-        UniLink UAA © 2026 • Universidad Autónoma de Aguascalientes
-        <span aria-hidden> • </span>
-        <Link to="/descargar" className="font-semibold underline underline-offset-2 hover:text-[#A30021] dark:hover:text-[#F0607A] transition-colors">Descargar app para Android</Link>
+        UniLink © 2026
       </footer>
     </div>
   );

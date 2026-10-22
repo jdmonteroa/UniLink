@@ -225,7 +225,7 @@ function getDemoDb(): DemoDb {
   });
   const groups = [
     mk(0, 'Estructura de Datos · Estudio', 'Repasamos ejercicios y nos preparamos para exámenes. Todos los niveles.', 'estudio', 14),
-    mk(1, 'Rodada en bici UAA', 'Salidas los sábados por la mañana. Traer casco y agua.', 'deporte', 9),
+    mk(1, 'Rodada en bici', 'Salidas los sábados por la mañana. Traer casco y agua.', 'deporte', 9),
     mk(2, 'Cineclub de los jueves', 'Vemos una película y la comentamos. Abierto a todas las carreras.', 'arte', 22),
   ];
   demoDb = {

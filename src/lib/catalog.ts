@@ -43,8 +43,8 @@ const demoInterests: Record<string, string[]> = {
 
 export const DEMO_CATALOG: Catalog = {
   campuses: [
-    { id: 'central', name: 'Campus Central UAA' },
-    { id: 'sur', name: 'Campus Sur UAA' },
+    { id: 'central', name: 'Campus Central' },
+    { id: 'sur', name: 'Campus Sur' },
   ],
   careers: demoCareers,
   subjects: Object.entries(demoSubjectsByCareer).flatMap(([careerId, names]) =>
