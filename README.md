@@ -152,6 +152,28 @@ Las fotos se comprimen en el navegador (máx. 1440 px, JPEG) y se suben al bucke
 
 ---
 
+## App de Android (APK)
+La app tiene un APK para Android que se descarga desde la propia web, en `/descargar` (página pública, sin iniciar sesión). El enlace aparece en el pie del login y, en Android, como tarjeta en *Mi perfil*.
+
+**Cómo funciona.** Es una *Trusted Web Activity* (generada con PWABuilder): el APK solo abre `https://unilinksystem.vercel.app` a pantalla completa, sin barra del navegador. Por eso **las mejoras de la web les llegan solas** a quienes ya lo instalaron (con el aviso "Hay una versión nueva" de la PWA); solo hay que generar un APK nuevo si cambia el ícono, el nombre, el ID del paquete (`app.vercel.unilink.twa`) o la URL del sitio.
+
+**Piezas en el repositorio**
+- `public/downloads/unilink.apk`: el archivo que se descarga. Vercel lo sirve con `Content-Disposition: attachment` (ver `vercel.json`). El tamaño que muestra la página se calcula al compilar.
+- `public/.well-known/assetlinks.json`: enlaza el sitio con el APK (ID del paquete + huella SHA-256 de la llave de firma). Sin él, Android mostraría la barra de direcciones. Debe abrir en `https://<dominio>/.well-known/assetlinks.json`.
+- `vite.config.ts` excluye `/downloads/` y `/.well-known/` del `navigateFallback` del service worker; sin eso, tocar "Descargar" bajaría `index.html` en vez del APK.
+- `src/lib/android.ts`: versión que muestra la página (`ANDROID_APK.version`).
+
+**Publicar una versión nueva del APK**
+1. Genera el APK nuevo en PWABuilder con el **mismo ID de paquete y la misma llave de firma** (`signing.keystore`); así Android lo instala como actualización.
+2. Reemplaza `public/downloads/unilink.apk` y sube `ANDROID_APK.version` en `src/lib/android.ts`.
+3. Si cambió la llave o el dominio, actualiza también `assetlinks.json` (una huella o dominio distintos quitan el modo pantalla completa).
+
+**Importante: la llave de firma.** `signing.keystore` y sus contraseñas **no están ni deben estar en el repositorio** (`.gitignore` bloquea `*.keystore`, `*.jks`, `signing-key-info*` y `*.aab`). Guárdalos en un lugar seguro y con respaldo: si se pierden, ya no se pueden publicar actualizaciones del mismo APK.
+
+**Instalación para quien lo descarga:** permitir "instalar apps de esta fuente" para su navegador y, si Play Protect avisa, elegir "Instalar de todos modos" (la página lo explica). Necesita Chrome instalado en el teléfono. En iPhone no hay APK: se usa "Agregar a inicio" desde Safari.
+
+---
+
 ## App instalable (PWA)
 
 - **Íconos**: están en `public/` (el logo oficial: dos personas cuyos cuerpos forman la "u" y se enlazan; el favicon de la pestaña es `favicon.ico`). El manifiesto (nombre, colores e íconos) se configura en `vite.config.ts`.

@@ -4,6 +4,7 @@ import { Instagram, Edit3, Check, X, Loader2, PauseCircle, PlayCircle, Clock } f
 import { useAuthStore, formatSemester, DEFAULT_SEEKING, type ConnectionModeKey, type Seeking } from '@/features/auth/authStore';
 import { SeekingPicker } from '@/components/SeekingPicker';
 import { InstallCard } from '@/components/InstallCard';
+import { AndroidDownloadCard } from '@/components/AndroidDownloadCard';
 import { CheckBadgeIcon, BookOpenIcon, UserGroupIcon, HeartIcon } from '@/components/icons';
 import { PhotoManager } from '@/components/PhotoManager';
 import { Avatar } from '@/components/Avatar';
@@ -228,6 +229,7 @@ export const ProfileView: React.FC = () => {
       </section>
 
       <InstallCard />
+      <AndroidDownloadCard />
 
       {/* Modos */}
       <section className={card}>

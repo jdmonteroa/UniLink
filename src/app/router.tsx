@@ -5,6 +5,7 @@ import { LoginPage } from '@/features/auth/LoginPage';
 import { DiscoverPage } from '@/features/discover/DiscoverPage';
 import { OnboardingFlow } from '@/features/onboarding/OnboardingFlow';
 import { AdminShell } from '@/features/admin/AdminShell';
+import { DownloadPage } from '@/features/download/DownloadPage';
 import { useAuthStore } from '@/features/auth/authStore';
 import { Wordmark } from '@/components/brand';
 
@@ -112,5 +113,7 @@ const AppGate: React.FC = () => {
 
 export const router = createBrowserRouter([
   { path: '/', element: <AppGate /> },
+  // Pública: se puede abrir sin iniciar sesión
+  { path: '/descargar', element: <DownloadPage /> },
   { path: '*', element: <Navigate to="/" replace /> },
 ]);

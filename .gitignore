@@ -55,3 +55,9 @@ supabase/.branches
 # Documentos de diseño para Impeccable (solo locales)
 DESIGN.md
 PRODUCT.md
+
+# Llaves de firma de la app Android: NUNCA van al repositorio (si se pierden no se puede actualizar el APK)
+*.keystore
+*.jks
+signing-key-info*
+*.aab

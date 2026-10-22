@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useAuthStore, isAllowedInstitutionalEmail } from '@/features/auth/authStore';
 import { isSupabaseConfigured } from '@/lib/supabaseClient';
@@ -407,6 +407,8 @@ export const LoginPage: React.FC = () => {
 
       <footer className={cn('w-full max-w-6xl mx-auto px-5 sm:px-8 pb-6 text-xs', muted)}>
         UniLink UAA © 2026 • Universidad Autónoma de Aguascalientes
+        <span aria-hidden> • </span>
+        <Link to="/descargar" className="font-semibold underline underline-offset-2 hover:text-[#A30021] dark:hover:text-[#F0607A] transition-colors">Descargar app para Android</Link>
       </footer>
     </div>
   );
