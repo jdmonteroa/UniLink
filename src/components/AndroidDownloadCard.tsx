@@ -1,11 +1,11 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Smartphone, ArrowRight } from 'lucide-react';
-import { isAndroid, isRunningAsApp } from '@/lib/android';
+import { isRunningAsApp } from '@/lib/android';
 
-/** Tarjeta del perfil: solo aparece en Android y si todavía no se usa la app instalada. */
+/** Tarjeta del perfil con el botón de descarga. Se oculta si ya se usa la app instalada. */
 export const AndroidDownloadCard: React.FC = () => {
-  if (!isAndroid() || isRunningAsApp()) return null;
+  if (isRunningAsApp()) return null;
   return (
     <section className="rounded-3xl bg-white dark:bg-ink-850 p-5 shadow-soft-sm">
       <div className="flex items-center gap-4">

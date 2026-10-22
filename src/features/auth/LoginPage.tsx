@@ -16,6 +16,7 @@ import { CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Wordmark, Highlight, STICKER } from '@/components/brand';
 import { DownloadAppButton } from '@/components/DownloadAppButton';
+import { isRunningAsApp } from '@/lib/android';
 
 /*
   Login — "campus, pero ligero".
@@ -111,34 +112,37 @@ export const LoginPage: React.FC = () => {
     >
       {/* Barra superior */}
       <header className="w-full max-w-6xl mx-auto px-5 sm:px-8 pt-5 sm:pt-7 flex items-center justify-between">
-        <div className="flex items-center gap-3 min-w-0">
-          <Wordmark className="text-[1.75rem]" />
-          <DownloadAppButton />
-        </div>
+        <Wordmark className="text-[1.75rem]" />
 
-        <motion.button
-          type="button"
-          onClick={toggleDarkMode}
-          whileTap={{ scale: 0.9, rotate: -20 }}
-          className={cn(
-            'w-11 h-11 flex items-center justify-center rounded-full border-2 border-[#1C1C1E]/10 dark:border-white/10',
-            'hover:bg-[#FFC93C] hover:border-[#FFC93C] hover:text-[#1C1C1E] transition-colors duration-200',
-            focusRing
-          )}
-          aria-label={isDarkMode ? 'Cambiar a modo día' : 'Cambiar a modo noche'}
-        >
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.span
-              key={isDarkMode ? 'sun' : 'moon'}
-              initial={{ opacity: 0, rotate: -90, scale: 0.6 }}
-              animate={{ opacity: 1, rotate: 0, scale: 1 }}
-              exit={{ opacity: 0, rotate: 90, scale: 0.6 }}
-              transition={{ duration: 0.25 }}
-            >
-              {isDarkMode ? <SunIcon className="w-4.5 h-4.5" /> : <MoonIcon className="w-4.5 h-4.5" />}
-            </motion.span>
-          </AnimatePresence>
-        </motion.button>
+        {/* Sin sesión: el botón de descarga ocupa el lugar del icono de tema.
+            Si ya se usa la app instalada (el botón se oculta), se conserva el icono de tema. */}
+        {isRunningAsApp() ? (
+          <motion.button
+            type="button"
+            onClick={toggleDarkMode}
+            whileTap={{ scale: 0.9, rotate: -20 }}
+            className={cn(
+              'w-11 h-11 flex items-center justify-center rounded-full border-2 border-[#1C1C1E]/10 dark:border-white/10',
+              'hover:bg-[#FFC93C] hover:border-[#FFC93C] hover:text-[#1C1C1E] transition-colors duration-200',
+              focusRing
+            )}
+            aria-label={isDarkMode ? 'Cambiar a modo día' : 'Cambiar a modo noche'}
+          >
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.span
+                key={isDarkMode ? 'sun' : 'moon'}
+                initial={{ opacity: 0, rotate: -90, scale: 0.6 }}
+                animate={{ opacity: 1, rotate: 0, scale: 1 }}
+                exit={{ opacity: 0, rotate: 90, scale: 0.6 }}
+                transition={{ duration: 0.25 }}
+              >
+                {isDarkMode ? <SunIcon className="w-4.5 h-4.5" /> : <MoonIcon className="w-4.5 h-4.5" />}
+              </motion.span>
+            </AnimatePresence>
+          </motion.button>
+        ) : (
+          <DownloadAppButton />
+        )}
       </header>
 
       <main className="flex-1 w-full max-w-6xl mx-auto px-5 sm:px-8 pt-8 pb-12 sm:pt-12 lg:pt-16 grid lg:grid-cols-12 gap-10 lg:gap-14 lg:items-center">
