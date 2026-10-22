@@ -13,7 +13,6 @@ export const STICKER = {
 
 /** Color de cada modo de conexión. */
 export const MODE_COLOR: Record<ConnectionMode, string> = {
-  study: STICKER.mint,
   friendship: STICKER.sun,
   dating: STICKER.coral,
 };
