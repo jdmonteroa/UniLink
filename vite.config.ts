@@ -3,9 +3,15 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { fileURLToPath, URL } from 'node:url';
+import { existsSync, statSync } from 'node:fs';
 
 // https://vitejs.dev/config/
+// Tamaño del APK en MB, calculado al compilar para que la página de descarga nunca quede desfasada
+const APK_PATH = fileURLToPath(new URL('./public/downloads/unilink.apk', import.meta.url));
+const apkSizeMb = existsSync(APK_PATH) ? (statSync(APK_PATH).size / 1024 / 1024).toFixed(1) : '';
+
 export default defineConfig({
+  define: { __APK_SIZE_MB__: JSON.stringify(apkSizeMb) },
   plugins: [
     react(),
     tailwindcss(),
@@ -39,6 +45,9 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,svg,ico,webmanifest,woff2}'],
         navigateFallback: '/index.html',
+        // El APK y la verificación de Android no son páginas de la app: sin esto el service worker
+        // contestaría con index.html y la descarga bajaría la web en vez del APK.
+        navigateFallbackDenylist: [/^\/downloads\//, /^\/\.well-known\//],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
           // Tipografías de Google: se guardan para que la app se vea igual sin conexión

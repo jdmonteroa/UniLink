@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "app.vercel.unilink.twa",
+        "sha256_cert_fingerprints": ["D2:9D:77:47:83:5C:75:C0:A3:56:6C:B1:D8:C4:1D:97:0A:2C:17:56:A2:DC:1A:14:39:1B:5D:75:64:AF:F8:4B"]
+      }
+    }]
