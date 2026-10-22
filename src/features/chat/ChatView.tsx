@@ -5,7 +5,6 @@ import {
   UserX,
   HeartCrack,
   ArrowLeft,
-  BookOpen,
   Users,
   Heart,
   MoreVertical,
@@ -23,7 +22,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Highlight, MODE_COLOR, spring } from '@/components/brand';
 import type { ConnectionMode } from '@/features/theme/themeStore';
 
-const MODE_LABEL = { study: 'Modo Estudio', friendship: 'Modo Amistad', dating: 'Modo Pareja' } as const;
+const MODE_LABEL = { friendship: 'Amistades', dating: 'Pareja' } as const;
 
 const REPORT_REASONS: { value: ReportReason; label: string }[] = [
   { value: 'harassment', label: 'Acoso o amenazas' },
@@ -34,7 +33,6 @@ const REPORT_REASONS: { value: ReportReason; label: string }[] = [
 ];
 
 const ModeIcon: React.FC<{ mode: string }> = ({ mode }) => {
-  if (mode === 'study') return <BookOpen className="w-3.5 h-3.5 text-azure-600 dark:text-azure-400" />;
   if (mode === 'friendship') return <Users className="w-3.5 h-3.5 text-amber-600 dark:text-sun" />;
   return <Heart className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />;
 };

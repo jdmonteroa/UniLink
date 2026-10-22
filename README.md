@@ -3,16 +3,17 @@
 # UniLink
 
 > **App web para conectar estudiantes universitarios verificados de forma segura según intereses reales.**
-> Encuentra compañeros de estudio, amistad o pareja en tu campus.
+> Encuentra amistades (compañeros de tu carrera y con tus gustos) o pareja en tu campus.
 
 ---
 
 ## Qué hace
 
 - **Solo estudiantes verificados**: el registro solo acepta correos institucionales (`@edu.uaa.mx`, `@alumnos.uaa.mx`). La base de datos rechaza cualquier otro dominio.
-- **Tres modos de conexión**: Estudio, Amistad y Pareja. Cada quien activa los que quiera y elige a quién quiere conocer en cada uno (Mujeres, Hombres o Todos). El filtro es mutuo: solo ves a quien también quiere conocer a alguien como tú.
-- **Descubrir**: tarjetas que se deslizan a la derecha ("Me interesa") o a la izquierda ("Pasar"), con un porcentaje de afinidad calculado a partir de materias, intereses, horario libre, carrera, campus y actividad reciente.
-- **Matches y chat en tiempo real**: cuando el interés es mutuo se crea el match y se abre el chat. Incluye deshacer match, bloquear y reportar, y moderación automática de mensajes.
+- **Dos modos de conexión**: Amistades y Pareja. Cada quien activa los que quiera y elige a quién quiere conocer en cada uno (Mujeres, Hombres o Todos). El filtro es mutuo: solo ves a quien también quiere conocer a alguien como tú.
+- **Amistades**: una **lista** de estudiantes. Cada fila muestra su foto, su carrera y lo que le gusta hacer (los intereses que comparten contigo resaltan). Se filtra por carrera, semestre, campus, materia que cursa y lo que le gusta, se puede buscar por texto, y hay atajos como "Mi carrera", "Mi semestre" y "Cursan lo mismo que yo". Desde la lista se da "Me interesa" u "Ocultar"; si el interés es mutuo, se crea el match.
+- **Pareja**: tarjetas que se deslizan a la derecha ("Me interesa") o a la izquierda ("Pasar"), con un porcentaje de afinidad calculado a partir de materias, intereses, horario libre, carrera, campus y actividad reciente.
+- **Matches y encuentros**: los matches se dividen en **Amistades** y **Pareja**. En esta versión **no hay chat**: cada match se conecta proponiendo un encuentro en la escuela (ver [Encuentros](#encuentros)). Incluye deshacer match, bloquear y reportar.
 - **Grupos**: cualquiera crea un grupo (nombre, categoría, descripción, imagen y enlace de WhatsApp u otra red). Son visibles para toda la universidad; se pide permiso para entrar y un administrador del grupo lo acepta. Solo los miembros ven el enlace. El creador es administrador y nombra más administradores entre los miembros.
 - **Eventos y avisos**: cualquiera puede mandar uno (texto, imagen o ambos), pero nada se publica hasta que un moderador lo aprueba. Ver [Moderación de eventos](#moderación-de-eventos).
 - **Perfil**: hasta 2 fotos, biografía, Instagram (solo lo ven tus matches), intereses, materias y horario libre.
@@ -95,11 +96,21 @@ Al final de `setup.sql` hay una sección **opcional y desactivada** que crea 10 
 La app no tiene un servidor propio: el frontend habla directo con Supabase usando solo la clave pública (`anon key`). La seguridad vive en las políticas RLS de cada tabla.
 
 - **Registro**: un trigger (`handle_new_user`) valida el dominio del correo y crea el perfil y los modos de conexión.
-- **Descubrir**: la función `get_recommendations` filtra (misma universidad, modo activo, preferencias mutuas, sin bloqueos) y calcula la afinidad.
+- **Descubrir**: la función `get_recommendations` filtra (misma universidad, modo activo, preferencias mutuas, sin bloqueos) y calcula la afinidad. Pareja la usa directamente; **Amistades** usa `list_students`, que la envuelve y agrega los filtros (carrera, campus, semestre, materia, interés y texto, con paginación de 40 en 40).
+- **El modo Estudio ya no existe** en la app. Los datos viejos de ese modo (`connection_modes`, `swipes`, `matches` con `mode = 'study'`) no se borran; los matches antiguos se muestran como Amistades.
 - **Deslizar**: cada decisión se guarda en `swipes`. Un trigger (`handle_swipe_action`) crea el match y la conversación cuando el "Me interesa" es mutuo, y limita a 25 "Me interesa" al día en cuentas gratuitas.
 - **Chat**: los mensajes se guardan en `messages` y llegan por Realtime. Un trigger (`moderate_message`) frena el spam y descarta mensajes con términos prohibidos.
 - **Reportes**: si 3 personas distintas reportan a alguien en 7 días, su perfil se suspende automáticamente 3 días (`handle_report_threshold`).
 - **Otras funciones**: `get_my_matches`, `unmatch`, `block_user`, `mark_conversation_read` y `ensure_my_profile`.
+
+### Encuentros
+El chat está **apagado** (`CHAT_ENABLED = false` en `src/lib/features.ts`; el código y las tablas siguen ahí, poner `true` lo vuelve a mostrar). En su lugar, tras un match cualquiera de los dos puede **proponer un encuentro**: un lugar libre dentro de la escuela (salón, cafetería, librería, infoteca…), fecha y hora, y un **mensaje obligatorio** de 5 a 200 caracteres.
+
+- Quien recibe la propuesta ve un **punto rojo** en la pestaña *Matches* y en ese match; al entrar ve el mensaje, el lugar y la hora y puede **aceptar**, **rechazar** (con nota opcional) o **replantear** (otro lugar u hora, con su propio mensaje obligatorio). Quien propuso ve "Esperando respuesta" y puede cancelar.
+- Máximo **3 rondas** de replanteamiento por propuesta, una propuesta activa por match, y vencen a las 48 h sin respuesta o al pasar la hora. Máximo 10 propuestas por persona al día.
+- El texto (lugar, mensaje y notas) pasa por el mismo filtro de insultos, groserías, contenido sexual, amenazas y spam que los eventos, y además no admite enlaces. Si no pasa, no se envía; aquí no hay moderador en medio.
+- El **Instagram** del match solo se muestra cuando hay un encuentro aceptado, para avisar de imprevistos.
+- El punto rojo se actualiza en vivo (Realtime sobre `meetups`). Todo está en la sección 2.15 de `setup.sql` (`propose_meetup`, `respond_meetup`, `cancel_meetup`, `get_my_connections`…).
 
 ### Moderación de eventos
 Todo evento o aviso nace **en revisión** y solo se publica cuando un moderador o administrador lo aprueba.

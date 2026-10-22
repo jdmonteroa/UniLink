@@ -26,12 +26,6 @@ export const PhaseOneShowcase: React.FC = () => {
     badgeText: string;
   }[] = [
     {
-      id: 'study',
-      label: 'Estudio',
-      icon: BookOpenIcon,
-      badgeText: 'Materias & Biblioteca',
-    },
-    {
       id: 'friendship',
       label: 'Amistad',
       icon: UserGroupIcon,

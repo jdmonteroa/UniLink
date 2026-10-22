@@ -1211,6 +1211,414 @@ GRANT EXECUTE ON FUNCTION public.block_user(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.mark_conversation_read(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.ensure_my_profile() TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.get_recommendations(TEXT, INTEGER) FROM anon;
+
+-- ------------------------------------------------------------------------------
+-- 2.14 LISTA DE ESTUDIANTES (modo Amistad)
+-- Misma base que get_recommendations (misma universidad, preferencia mutua, sin
+-- bloqueos, sin quien ya evaluaste), pero con filtros opcionales pensados para
+-- estudios: carrera, campus, semestre, materia que cursa, interés y búsqueda por
+-- texto. Devuelve a cada persona con su foto, intereses y carrera.
+-- ------------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER);
+CREATE FUNCTION public.list_students(
+  p_mode TEXT DEFAULT 'friendship',
+  p_career UUID DEFAULT NULL,
+  p_campus UUID DEFAULT NULL,
+  p_semester INTEGER DEFAULT NULL,
+  p_subject UUID DEFAULT NULL,
+  p_interest UUID DEFAULT NULL,
+  p_query TEXT DEFAULT NULL,
+  p_limit INTEGER DEFAULT 40,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE (
+  profile_id UUID, full_name TEXT, age INTEGER, career_name TEXT, campus_name TEXT, semester INTEGER,
+  bio TEXT, is_photo_verified BOOLEAN, photos JSONB, compatibility_score INTEGER,
+  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+DECLARE
+  q TEXT := NULLIF(btrim(COALESCE(p_query, '')), '');
+BEGIN
+  IF auth.uid() IS NULL THEN RETURN; END IF;
+  IF q IS NOT NULL THEN
+    q := '%' || replace(replace(replace(lower(left(q, 60)), '\', '\\'), '%', '\%'), '_', '\_') || '%';
+  END IF;
+
+  RETURN QUERY
+  SELECT r.profile_id, r.full_name, r.age, r.career_name, r.campus_name, r.semester,
+         r.bio, r.is_photo_verified, r.photos, r.compatibility_score,
+         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests
+  FROM public.get_recommendations(p_mode, 1000) r
+  JOIN public.profiles p ON p.id = r.profile_id
+  WHERE (p_career IS NULL OR p.career_id = p_career)
+    AND (p_campus IS NULL OR p.campus_id = p_campus)
+    AND (p_semester IS NULL OR p.semester = p_semester)
+    AND (p_subject IS NULL OR EXISTS (
+          SELECT 1 FROM public.profile_subjects ps WHERE ps.profile_id = p.id AND ps.subject_id = p_subject))
+    AND (p_interest IS NULL OR EXISTS (
+          SELECT 1 FROM public.profile_interests pi WHERE pi.profile_id = p.id AND pi.interest_id = p_interest))
+    AND (q IS NULL
+         OR lower(r.full_name) LIKE q
+         OR lower(COALESCE(r.bio, '')) LIKE q
+         OR lower(COALESCE(r.career_name, '')) LIKE q
+         OR lower(r.interests::TEXT) LIKE q)
+  ORDER BY r.compatibility_score DESC, r.full_name
+  LIMIT LEAST(GREATEST(COALESCE(p_limit, 40), 1), 100)
+  OFFSET GREATEST(COALESCE(p_offset, 0), 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) FROM anon;
+
+-- ------------------------------------------------------------------------------
+-- 2.15 ENCUENTROS (reemplazan al chat entre matches)
+-- Tras un match, cualquiera de los dos propone quedar en un lugar y hora de la
+-- escuela con un mensaje corto OBLIGATORIO. La otra persona acepta, rechaza o
+-- replantea (otro lugar/hora con su propio mensaje). Máximo 3 rondas por propuesta,
+-- una propuesta activa por match, vencen a las 48 h o al pasar la hora.
+-- El texto se filtra (insultos, groserías, contenido sexual, amenazas, spam y
+-- enlaces) y se rechaza si no pasa: aquí no hay moderador en medio.
+-- El Instagram del match solo se muestra cuando hay un encuentro aceptado.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.meetups (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    match_id UUID NOT NULL REFERENCES public.matches(id) ON DELETE CASCADE,
+    proposer_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    recipient_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    place TEXT NOT NULL CHECK (char_length(place) BETWEEN 3 AND 80),
+    when_at TIMESTAMPTZ NOT NULL,
+    note TEXT NOT NULL CHECK (char_length(note) BETWEEN 5 AND 200),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'accepted', 'declined', 'rescheduled', 'cancelled', 'expired')),
+    round INTEGER NOT NULL DEFAULT 1 CHECK (round BETWEEN 1 AND 3),
+    parent_id UUID REFERENCES public.meetups(id) ON DELETE SET NULL,
+    response_note TEXT CHECK (char_length(response_note) <= 200),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    CHECK (proposer_id <> recipient_id)
+);
+
+-- Una sola propuesta esperando respuesta por match
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_meetup_pending ON public.meetups(match_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_meetups_match ON public.meetups(match_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_meetups_proposer_day ON public.meetups(proposer_id, created_at);
+
+-- Cuándo abrió cada persona un match por última vez (para el punto rojo)
+CREATE TABLE IF NOT EXISTS public.meetup_reads (
+    match_id UUID NOT NULL REFERENCES public.matches(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(match_id, user_id)
+);
+
+ALTER TABLE public.meetups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.meetup_reads ENABLE ROW LEVEL SECURITY;
+
+-- Solo lectura para quienes participan; todo lo demás pasa por las funciones
+DROP POLICY IF EXISTS "Ver mis encuentros" ON public.meetups;
+CREATE POLICY "Ver mis encuentros" ON public.meetups FOR SELECT TO authenticated
+USING (auth.uid() IN (proposer_id, recipient_id));
+DROP POLICY IF EXISTS "Ver mis lecturas" ON public.meetup_reads;
+CREATE POLICY "Ver mis lecturas" ON public.meetup_reads FOR SELECT TO authenticated
+USING (auth.uid() = user_id);
+
+-- Devuelve el motivo si el texto no es aceptable (null = está bien)
+CREATE OR REPLACE FUNCTION public.meetup_text_problem(p_text TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE scan JSONB := public.scan_text(p_text);
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(scan->'hits') h
+    WHERE h->>'severity' IN ('medium', 'high') OR h->>'category' = 'link'
+  ) THEN
+    RETURN 'El texto contiene lenguaje o enlaces que no están permitidos. Reescríbelo.';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.meetup_text_problem(TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Marca como vencidas las propuestas sin respuesta (48 h) o cuya hora ya pasó
+CREATE OR REPLACE FUNCTION public.expire_my_stale_meetups()
+RETURNS VOID
+LANGUAGE sql SECURITY DEFINER SET search_path = public
+AS $$
+  UPDATE public.meetups SET status = 'expired', updated_at = NOW(), updated_by = NULL
+  WHERE status = 'pending'
+    AND auth.uid() IN (proposer_id, recipient_id)
+    AND (created_at < NOW() - INTERVAL '48 hours' OR when_at < NOW());
+$$;
+REVOKE EXECUTE ON FUNCTION public.expire_my_stale_meetups() FROM PUBLIC, anon, authenticated;
+
+-- Valida lugar, hora y mensaje de una propuesta o replanteamiento
+CREATE OR REPLACE FUNCTION public.validate_meetup_fields(p_place TEXT, p_when TIMESTAMPTZ, p_note TEXT)
+RETURNS VOID
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE problem TEXT;
+BEGIN
+  IF char_length(p_place) < 3 OR char_length(p_place) > 80 THEN
+    RAISE EXCEPTION 'Escribe el lugar de la escuela donde se verán (3 a 80 caracteres).';
+  END IF;
+  IF p_when IS NULL OR p_when < NOW() + INTERVAL '15 minutes' THEN
+    RAISE EXCEPTION 'Elige una fecha y hora que todavía no haya pasado (con al menos 15 minutos de margen).';
+  END IF;
+  IF p_when > NOW() + INTERVAL '60 days' THEN RAISE EXCEPTION 'Elige una fecha dentro de los próximos 60 días.'; END IF;
+  IF char_length(p_note) < 5 THEN RAISE EXCEPTION 'Escribe un mensaje para la otra persona (mínimo 5 caracteres).'; END IF;
+  IF char_length(p_note) > 200 THEN RAISE EXCEPTION 'El mensaje puede tener máximo 200 caracteres.'; END IF;
+  problem := COALESCE(public.meetup_text_problem(p_place), public.meetup_text_problem(p_note));
+  IF problem IS NOT NULL THEN RAISE EXCEPTION '%', problem; END IF;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.validate_meetup_fields(TEXT, TIMESTAMPTZ, TEXT) FROM PUBLIC, anon, authenticated;
+
+DROP FUNCTION IF EXISTS public.propose_meetup(UUID, TEXT, TIMESTAMPTZ, TEXT);
+CREATE FUNCTION public.propose_meetup(p_match UUID, p_place TEXT, p_when TIMESTAMPTZ, p_note TEXT)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_variable
+DECLARE
+  me UUID := auth.uid();
+  m RECORD;
+  other UUID;
+  place TEXT := btrim(COALESCE(p_place, ''));
+  note TEXT := btrim(COALESCE(p_note, ''));
+  new_id UUID;
+BEGIN
+  IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión primero.'; END IF;
+  SELECT * INTO m FROM public.matches WHERE id = p_match AND is_active = TRUE AND me IN (user_a, user_b);
+  IF NOT FOUND THEN RAISE EXCEPTION 'Ese match ya no está disponible.'; END IF;
+  other := CASE WHEN m.user_a = me THEN m.user_b ELSE m.user_a END;
+  IF EXISTS (SELECT 1 FROM public.blocks WHERE (blocker_id = me AND blocked_id = other) OR (blocker_id = other AND blocked_id = me)) THEN
+    RAISE EXCEPTION 'Ese match ya no está disponible.';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.profiles WHERE id = me AND is_suspended AND (suspended_until IS NULL OR suspended_until > NOW())) THEN
+    RAISE EXCEPTION 'Tu cuenta está suspendida y no puede proponer encuentros.';
+  END IF;
+
+  PERFORM public.expire_my_stale_meetups();
+  IF EXISTS (SELECT 1 FROM public.meetups WHERE match_id = p_match AND status = 'pending') THEN
+    RAISE EXCEPTION 'Ya hay un encuentro esperando respuesta.';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.meetups WHERE match_id = p_match AND status = 'accepted' AND when_at > NOW()) THEN
+    RAISE EXCEPTION 'Ya tienen un encuentro confirmado. Cancélalo si quieren proponer otro.';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.meetups WHERE proposer_id = me AND created_at > NOW() - INTERVAL '24 hours') >= 10 THEN
+    RAISE EXCEPTION 'Mandaste muchas propuestas hoy. Inténtalo mañana.';
+  END IF;
+
+  PERFORM public.validate_meetup_fields(place, p_when, note);
+  INSERT INTO public.meetups (match_id, proposer_id, recipient_id, place, when_at, note, updated_by)
+  VALUES (p_match, me, other, place, p_when, note, me)
+  RETURNING id INTO new_id;
+  RETURN new_id;
+END;
+$$;
+
+-- p_action: 'accept' | 'decline' | 'reschedule'. Solo quien recibió la propuesta.
+-- Al replantear se crea una propuesta nueva (ronda + 1) que ahora debe responder
+-- quien propuso primero; la nota es obligatoria. Devuelve el id de la propuesta vigente.
+DROP FUNCTION IF EXISTS public.respond_meetup(UUID, TEXT, TEXT, TEXT, TIMESTAMPTZ);
+CREATE FUNCTION public.respond_meetup(
+  p_meetup UUID, p_action TEXT, p_note TEXT DEFAULT NULL, p_place TEXT DEFAULT NULL, p_when TIMESTAMPTZ DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_variable
+DECLARE
+  me UUID := auth.uid();
+  mt RECORD;
+  note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
+  place TEXT;
+  new_id UUID;
+  problem TEXT;
+BEGIN
+  IF p_action NOT IN ('accept', 'decline', 'reschedule') THEN RAISE EXCEPTION 'Acción no válida.'; END IF;
+  SELECT * INTO mt FROM public.meetups WHERE id = p_meetup FOR UPDATE;
+  IF NOT FOUND OR mt.recipient_id IS DISTINCT FROM me THEN RAISE EXCEPTION 'Esa propuesta no es tuya para responder.'; END IF;
+  IF mt.status <> 'pending' THEN RAISE EXCEPTION 'Esta propuesta ya fue respondida.'; END IF;
+  IF mt.created_at < NOW() - INTERVAL '48 hours' OR mt.when_at < NOW() THEN
+    UPDATE public.meetups SET status = 'expired', updated_at = NOW(), updated_by = NULL WHERE id = p_meetup;
+    RAISE EXCEPTION 'Esta propuesta ya venció.';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.matches WHERE id = mt.match_id AND is_active = TRUE) THEN
+    RAISE EXCEPTION 'Ese match ya no está disponible.';
+  END IF;
+
+  IF p_action = 'accept' THEN
+    UPDATE public.meetups SET status = 'accepted', updated_at = NOW(), updated_by = me WHERE id = p_meetup;
+    RETURN p_meetup;
+  END IF;
+
+  IF p_action = 'decline' THEN
+    IF note IS NOT NULL THEN
+      IF char_length(note) > 200 THEN RAISE EXCEPTION 'El mensaje puede tener máximo 200 caracteres.'; END IF;
+      problem := public.meetup_text_problem(note);
+      IF problem IS NOT NULL THEN RAISE EXCEPTION '%', problem; END IF;
+    END IF;
+    UPDATE public.meetups SET status = 'declined', response_note = note, updated_at = NOW(), updated_by = me WHERE id = p_meetup;
+    RETURN p_meetup;
+  END IF;
+
+  -- reschedule
+  IF mt.round >= 3 THEN RAISE EXCEPTION 'Ya no se puede replantear: acepta o rechaza el encuentro.'; END IF;
+  place := btrim(COALESCE(NULLIF(btrim(COALESCE(p_place, '')), ''), mt.place));
+  PERFORM public.validate_meetup_fields(place, p_when, COALESCE(note, ''));
+  UPDATE public.meetups SET status = 'rescheduled', updated_at = NOW(), updated_by = me WHERE id = p_meetup;
+  INSERT INTO public.meetups (match_id, proposer_id, recipient_id, place, when_at, note, round, parent_id, updated_by)
+  VALUES (mt.match_id, me, mt.proposer_id, place, p_when, note, mt.round + 1, p_meetup, me)
+  RETURNING id INTO new_id;
+  RETURN new_id;
+END;
+$$;
+
+-- Quien propuso cancela una propuesta pendiente; cualquiera de los dos cancela un encuentro aceptado.
+DROP FUNCTION IF EXISTS public.cancel_meetup(UUID, TEXT);
+CREATE FUNCTION public.cancel_meetup(p_meetup UUID, p_note TEXT DEFAULT NULL)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_variable
+DECLARE
+  me UUID := auth.uid();
+  mt RECORD;
+  note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
+  problem TEXT;
+BEGIN
+  SELECT * INTO mt FROM public.meetups WHERE id = p_meetup FOR UPDATE;
+  IF NOT FOUND OR me NOT IN (mt.proposer_id, mt.recipient_id) THEN RAISE EXCEPTION 'Ese encuentro no existe.'; END IF;
+  IF NOT ((mt.status = 'pending' AND mt.proposer_id = me) OR (mt.status = 'accepted' AND mt.when_at > NOW())) THEN
+    RAISE EXCEPTION 'Este encuentro ya no se puede cancelar.';
+  END IF;
+  IF note IS NOT NULL THEN
+    IF char_length(note) > 200 THEN RAISE EXCEPTION 'El mensaje puede tener máximo 200 caracteres.'; END IF;
+    problem := public.meetup_text_problem(note);
+    IF problem IS NOT NULL THEN RAISE EXCEPTION '%', problem; END IF;
+  END IF;
+  UPDATE public.meetups SET status = 'cancelled', response_note = note, updated_at = NOW(), updated_by = me WHERE id = p_meetup;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.mark_match_seen(UUID);
+CREATE FUNCTION public.mark_match_seen(p_match UUID)
+RETURNS VOID
+LANGUAGE sql SECURITY DEFINER SET search_path = public
+AS $$
+  INSERT INTO public.meetup_reads (match_id, user_id, seen_at)
+  SELECT m.id, auth.uid(), NOW() FROM public.matches m WHERE m.id = p_match AND auth.uid() IN (m.user_a, m.user_b)
+  ON CONFLICT (match_id, user_id) DO UPDATE SET seen_at = NOW();
+$$;
+
+-- Historial de propuestas de un match (lo más reciente primero)
+DROP FUNCTION IF EXISTS public.get_match_meetups(UUID);
+CREATE FUNCTION public.get_match_meetups(p_match UUID)
+RETURNS TABLE (
+  id UUID, proposer_id UUID, place TEXT, when_at TIMESTAMPTZ, note TEXT, status TEXT, round INTEGER,
+  response_note TEXT, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, updated_by UUID
+)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.matches m WHERE m.id = p_match AND auth.uid() IN (m.user_a, m.user_b)) THEN
+    RAISE EXCEPTION 'Ese match no existe.';
+  END IF;
+  PERFORM public.expire_my_stale_meetups();
+  RETURN QUERY
+  SELECT x.id, x.proposer_id, x.place, x.when_at, x.note, x.status, x.round, x.response_note, x.created_at, x.updated_at, x.updated_by
+  FROM public.meetups x WHERE x.match_id = p_match
+  ORDER BY x.created_at DESC LIMIT 12;
+END;
+$$;
+
+-- Matches de quien consulta con el estado de su encuentro y si hay algo pendiente
+-- (needs_attention = punto rojo). El Instagram solo se muestra si hubo un encuentro aceptado.
+DROP FUNCTION IF EXISTS public.get_my_connections();
+CREATE FUNCTION public.get_my_connections()
+RETURNS TABLE (
+  match_id UUID, mode TEXT, matched_at TIMESTAMPTZ,
+  other_id UUID, other_name TEXT, other_career TEXT, other_campus TEXT, other_semester INTEGER,
+  other_bio TEXT, other_photo TEXT, other_instagram TEXT, other_verified BOOLEAN, other_interests JSONB,
+  meetup_id UUID, meetup_status TEXT, meetup_proposer_is_me BOOLEAN, meetup_place TEXT, meetup_when TIMESTAMPTZ,
+  meetup_round INTEGER, meetup_note TEXT, meetup_response_note TEXT, meetup_updated_at TIMESTAMPTZ,
+  needs_attention BOOLEAN
+)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+DECLARE me UUID := auth.uid();
+BEGIN
+  IF me IS NULL THEN RETURN; END IF;
+  PERFORM public.expire_my_stale_meetups();
+  RETURN QUERY
+  SELECT m.id, m.mode, m.created_at,
+         o.id, o.full_name, car.name, cam.name, o.semester,
+         o.bio,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = o.id ORDER BY ph.position LIMIT 1),
+         CASE WHEN EXISTS (SELECT 1 FROM public.meetups a WHERE a.match_id = m.id AND a.status = 'accepted')
+              THEN o.instagram_handle END,
+         COALESCE(o.is_photo_verified, FALSE),
+         COALESCE((SELECT jsonb_agg(i.name ORDER BY i.name) FROM public.profile_interests pi
+                   JOIN public.interests i ON i.id = pi.interest_id WHERE pi.profile_id = o.id), '[]'::JSONB),
+         cur.id, cur.status, (cur.proposer_id = me), cur.place, cur.when_at,
+         cur.round, cur.note, cur.response_note, cur.updated_at,
+         COALESCE(
+           (cur.status = 'pending' AND cur.recipient_id = me)
+           OR (cur.status IN ('accepted', 'declined', 'cancelled')
+               AND cur.updated_by IS DISTINCT FROM me
+               AND cur.updated_at > COALESCE(rd.seen_at, '-infinity'::TIMESTAMPTZ)),
+           FALSE)
+  FROM public.matches m
+  JOIN public.profiles o ON o.id = CASE WHEN m.user_a = me THEN m.user_b ELSE m.user_a END
+  LEFT JOIN public.careers car ON car.id = o.career_id
+  LEFT JOIN public.campuses cam ON cam.id = o.campus_id
+  LEFT JOIN public.meetup_reads rd ON rd.match_id = m.id AND rd.user_id = me
+  LEFT JOIN LATERAL (
+    SELECT x.* FROM public.meetups x WHERE x.match_id = m.id ORDER BY x.created_at DESC LIMIT 1
+  ) cur ON TRUE
+  WHERE me IN (m.user_a, m.user_b)
+    AND m.is_active = TRUE
+    AND NOT EXISTS (
+      SELECT 1 FROM public.blocks b
+      WHERE (b.blocker_id = me AND b.blocked_id = o.id) OR (b.blocker_id = o.id AND b.blocked_id = me)
+    )
+  ORDER BY 23 DESC, COALESCE(cur.updated_at, m.created_at) DESC;
+END;
+$$;
+
+-- Para que el punto rojo aparezca en vivo
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
+     AND NOT EXISTS (
+       SELECT 1 FROM pg_publication_tables
+       WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'meetups'
+     ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.meetups;
+  END IF;
+END $$;
+
+GRANT EXECUTE ON FUNCTION public.propose_meetup(UUID, TEXT, TIMESTAMPTZ, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.respond_meetup(UUID, TEXT, TEXT, TEXT, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_meetup(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.mark_match_seen(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_match_meetups(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_my_connections() TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.propose_meetup(UUID, TEXT, TIMESTAMPTZ, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.respond_meetup(UUID, TEXT, TEXT, TEXT, TIMESTAMPTZ) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.cancel_meetup(UUID, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.mark_match_seen(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_match_meetups(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_my_connections() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_my_matches() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.unmatch(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.block_user(UUID) FROM anon;

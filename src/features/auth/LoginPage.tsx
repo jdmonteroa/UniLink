@@ -9,7 +9,6 @@ import {
   MoonIcon,
   ArrowRightIcon,
   ShieldCheckIcon,
-  BookOpenIcon,
   UserGroupIcon,
   HeartIcon,
 } from '@/components/icons';
@@ -22,7 +21,7 @@ import { Wordmark, Highlight, STICKER } from '@/components/brand';
   Base de DESIGN.md (papel hueso / carbón, tinta / tiza, Crimson Academic) +
   una paleta de stickers para darle juventud: girasol, menta y coral.
   El carmesí sigue siendo el único color de ACCIÓN; los stickers solo decoran
-  y nombran los tres modos reales de la app (Estudio, Amistad, Citas).
+  y nombran los dos modos reales de la app (Amistades y Pareja).
 */
 
 const C = STICKER;
@@ -43,11 +42,10 @@ const fieldIdle =
   'border-[#1C1C1E]/10 dark:border-white/10 hover:border-[#1C1C1E]/25 dark:hover:border-white/20 focus:border-[#1C1C1E] dark:focus:border-[#F9F9FB] focus:bg-white dark:focus:bg-white/[0.07]';
 const labelCls = 'block mb-2 text-sm font-semibold';
 
-/* Stickers de los tres modos de conexión */
+/* Stickers de los dos modos de conexión */
 const stickers = [
-  { label: 'Estudio', Icon: BookOpenIcon, bg: C.mint, rotate: -6 },
-  { label: 'Amistad', Icon: UserGroupIcon, bg: C.sun, rotate: 4 },
-  { label: 'Pareja', Icon: HeartIcon, bg: C.coral, rotate: -3 },
+  { label: 'Amistades', Icon: UserGroupIcon, bg: C.sun, rotate: -4 },
+  { label: 'Pareja', Icon: HeartIcon, bg: C.coral, rotate: 3 },
 ];
 
 export const LoginPage: React.FC = () => {
