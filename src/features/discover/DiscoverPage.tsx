@@ -132,9 +132,12 @@ export const DiscoverPage: React.FC = () => {
   const refreshMatches = () => void (CHAT_ENABLED ? loadMatches() : loadConnections());
   const pendingGroupRequests = useGroupsStore((s) => s.groups.reduce((sum, g) => sum + g.pendingRequests, 0));
   const loadGroups = useGroupsStore((s) => s.loadGroups);
+  const groupModerationCount = useGroupsStore((s) => s.submissions.length + s.changeRequests.length);
+  const loadGroupModeration = useGroupsStore((s) => s.loadModeration);
   useEffect(() => {
     void loadGroups(); // para avisar de solicitudes pendientes en la barra inferior
-  }, [loadGroups]);
+    void loadGroupModeration(); // solo hace algo si eres moderador
+  }, [loadGroups, loadGroupModeration]);
   const pendingEventReviews = useEventsStore((s) => s.queue.length);
   const loadEventQueue = useEventsStore((s) => s.loadQueue);
   useEffect(() => {
@@ -886,7 +889,7 @@ export const DiscoverPage: React.FC = () => {
               >
                 <span className="relative">
                   <Icon className="w-5.5 h-5.5" strokeWidth={on ? 2.25 : 2} />
-                  {((id === 'chat' && matchesDot) || (id === 'groups' && pendingGroupRequests > 0) || (id === 'events' && pendingEventReviews > 0)) && (
+                  {((id === 'chat' && matchesDot) || (id === 'groups' && (pendingGroupRequests > 0 || groupModerationCount > 0)) || (id === 'events' && pendingEventReviews > 0)) && (
                     <span className="absolute -top-0.5 -right-1 w-2.5 h-2.5 rounded-full bg-brand-600 ring-2 ring-haze-50 dark:ring-ink-950" />
                   )}
                 </span>

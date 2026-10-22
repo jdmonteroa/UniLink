@@ -20,6 +20,7 @@ import {
   LogOut,
   Clock,
   Link2,
+  Info,
 } from 'lucide-react';
 import { useAuthStore } from '@/features/auth/authStore';
 import {
@@ -37,6 +38,9 @@ import { photoUrl, removeStoredPhotos, uploadProfilePhoto } from '@/lib/photos';
 import { Avatar } from '@/components/Avatar';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { Highlight } from '@/components/brand';
+import { GroupChangePanel } from '@/features/groups/GroupChangePanel';
+import { chip } from '@/features/events/ui';
+import { GroupsModeration } from '@/features/groups/GroupsModeration';
 
 const MAX_DESCRIPTION = 500;
 const inputCls =
@@ -142,6 +146,21 @@ const GroupCard: React.FC<{ group: Group; onOpen: () => void }> = ({ group, onOp
       </span>
     ) : null;
 
+  const reviewBadge =
+    group.status === 'pending' ? (
+      <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 dark:text-sun">
+        <Clock className="w-3.5 h-3.5" /> En revisión
+      </span>
+    ) : group.status === 'rejected' ? (
+      <span className="inline-flex items-center gap-1 text-xs font-semibold text-rose-700 dark:text-rose-400">
+        <AlertCircle className="w-3.5 h-3.5" /> Rechazado · toca para corregir
+      </span>
+    ) : group.pendingChange ? (
+      <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 dark:text-haze-300">
+        <Clock className="w-3.5 h-3.5" /> Petición en revisión
+      </span>
+    ) : null;
+
   return (
     <button
       onClick={onOpen}
@@ -153,7 +172,8 @@ const GroupCard: React.FC<{ group: Group; onOpen: () => void }> = ({ group, onOp
         <span className="block text-xs text-slate-500 dark:text-haze-400">
           {categoryLabel(group.category)} · {group.memberCount} {group.memberCount === 1 ? 'miembro' : 'miembros'}
         </span>
-        {status}
+        {reviewBadge}
+        {group.status === 'approved' && status}
       </span>
     </button>
   );
@@ -190,7 +210,7 @@ const GroupList: React.FC<{ onOpen: (id: string) => void; onCreate: () => void }
           <p className="text-sm text-slate-500 dark:text-haze-400 mt-3">Pide entrar y te damos el enlace cuando te acepten.</p>
         </div>
         <button onClick={onCreate} className={`${primaryBtn} h-11 px-4 shrink-0`}>
-          <Plus className="w-4 h-4" /> Crear
+          <Plus className="w-4 h-4" /> Proponer
         </button>
       </div>
 
@@ -232,8 +252,8 @@ const GroupList: React.FC<{ onOpen: (id: string) => void; onCreate: () => void }
             <Users className="w-7 h-7" />
           </span>
           <h3 className="text-2xl font-semibold">Aún no hay grupos</h3>
-          <p className="text-sm text-slate-500 dark:text-haze-400 max-w-[30ch]">Crea el primero: un grupo de estudio, de deporte, de lo que quieras.</p>
-          <button onClick={onCreate} className={primaryBtn}>Crear un grupo</button>
+          <p className="text-sm text-slate-500 dark:text-haze-400 max-w-[30ch]">Propón el primero: un grupo de estudio, de deporte, de lo que quieras. Un administrador lo revisa antes de publicarlo.</p>
+          <button onClick={onCreate} className={primaryBtn}>Proponer un grupo</button>
         </div>
       ) : filtered.length === 0 ? (
         <p className="text-center text-sm text-slate-500 dark:text-haze-400 py-10">No encontramos grupos con esa búsqueda.</p>
@@ -321,6 +341,10 @@ const GroupDetail: React.FC<{ id: string; onBack: () => void; onEdit: () => void
   const isMember = !!group?.myRole;
   const isAdmin = group?.myRole === 'admin';
   const isCreator = !!group && group.createdBy === user?.id;
+  const isPlatformMod = user?.role === 'moderator' || user?.role === 'admin';
+  const approved = group?.status === 'approved';
+  const [showModDelete, setShowModDelete] = useState(false);
+  const [modReason, setModReason] = useState('');
 
   const reload = async () => {
     if (!group) return;
@@ -377,14 +401,26 @@ const GroupDetail: React.FC<{ id: string; onBack: () => void; onEdit: () => void
     if (ok && (await run('leave', () => store.leaveGroup(id)))) onBack();
   };
 
-  const remove = async () => {
+  // Quien lo creó solo puede retirar un grupo que todavía no se publicó (en revisión o rechazado)
+  const withdraw = async () => {
     const ok = await confirmDialog({
-      title: `¿Eliminar ${group.name}?`,
-      message: 'Se borrará el grupo para todos. Esta acción no se puede deshacer.',
-      confirmLabel: 'Eliminar grupo',
+      title: `¿Retirar ${group.name}?`,
+      message: 'Se borrará el grupo y no se enviará a revisión. Esta acción no se puede deshacer.',
+      confirmLabel: 'Retirar grupo',
       tone: 'danger',
     });
     if (ok && (await run('delete', () => store.deleteGroup(id)))) onBack();
+  };
+
+  // Un moderador o administrador elimina un grupo aprobado, siempre con motivo
+  const modDelete = async () => {
+    const ok = await confirmDialog({
+      title: `¿Eliminar ${group.name}?`,
+      message: 'Se borrará para todos sus miembros y el motivo quedará registrado. No se puede deshacer.',
+      confirmLabel: 'Eliminar grupo',
+      tone: 'danger',
+    });
+    if (ok && (await run('delete', () => store.deleteGroup(id, modReason)))) onBack();
   };
 
   const kick = async (m: GroupMember) => {
@@ -433,9 +469,33 @@ const GroupDetail: React.FC<{ id: string; onBack: () => void; onEdit: () => void
 
       <NoticeBanner notice={notice} />
 
+      {group.status === 'pending' && (
+        <p className="flex gap-2.5 p-4 rounded-2xl bg-sun/30 dark:bg-sun/10 text-sm">
+          <Clock className="w-5 h-5 shrink-0 mt-0.5" />
+          <span>
+            <strong>Tu grupo está en revisión.</strong> Un administrador de UniLink verá el nombre, la imagen y la descripción antes de publicarlo.
+            Mientras tanto nadie más lo ve. Puedes editarlo o retirarlo.
+          </span>
+        </p>
+      )}
+      {group.status === 'rejected' && (
+        <div className="p-4 rounded-2xl bg-rose-100 dark:bg-rose-950/50 text-rose-900 dark:text-rose-200 text-sm space-y-3">
+          <p className="flex gap-2.5">
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <span>
+              <strong>Tu grupo no pasó la revisión.</strong>
+              {group.reviewNote && <> Motivo: {group.reviewNote}</>}
+            </span>
+          </p>
+          <button onClick={onEdit} className="inline-flex items-center gap-1.5 h-10 px-4 rounded-full bg-rose-600 hover:bg-rose-700 text-white font-semibold transition active:scale-[0.97]">
+            <Pencil className="w-4 h-4" /> Corregir y reenviar
+          </button>
+        </div>
+      )}
+
       {/* Acción principal según mi relación con el grupo */}
       {isMember ? (
-        <button onClick={() => void openLink()} disabled={busy === 'link'} className={`${primaryBtn} w-full h-14 text-base`}>
+        !approved ? null : <button onClick={() => void openLink()} disabled={busy === 'link'} className={`${primaryBtn} w-full h-14 text-base`}>
           {busy === 'link' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
           Abrir el grupo
         </button>
@@ -547,10 +607,41 @@ const GroupDetail: React.FC<{ id: string; onBack: () => void; onEdit: () => void
           <LogOut className="w-4 h-4" /> Salir del grupo
         </button>
       )}
-      {isCreator && (
-        <button onClick={() => void remove()} className={`${outlineBtn} w-full text-rose-700 dark:text-rose-400`}>
-          <Trash2 className="w-4 h-4" /> Eliminar grupo
+      {isAdmin && approved && <GroupChangePanel group={group} members={members} isCreator={isCreator} onNotice={setNotice} />}
+
+      {isCreator && !approved && (
+        <button onClick={() => void withdraw()} className={`${outlineBtn} w-full text-rose-700 dark:text-rose-400`}>
+          <Trash2 className="w-4 h-4" /> Retirar grupo
         </button>
+      )}
+
+      {isPlatformMod && approved && (
+        <section className={card} aria-label="Administración de UniLink">
+          <div>
+            <h3 className="text-xl font-semibold">Administración de UniLink</h3>
+            <p className="text-sm text-slate-500 dark:text-haze-400 mt-1">Solo un administrador puede eliminar un grupo aprobado.</p>
+          </div>
+          {!showModDelete ? (
+            <button onClick={() => setShowModDelete(true)} className={`${outlineBtn} w-full text-rose-700 dark:text-rose-400`}>
+              <Trash2 className="w-4 h-4" /> Eliminar grupo
+            </button>
+          ) : (
+            <div className="space-y-3">
+              <label htmlFor="mod-del" className={labelCls}>Motivo de la eliminación</label>
+              <textarea id="mod-del" rows={3} maxLength={300} value={modReason} onChange={(e) => setModReason(e.target.value)} className={inputCls} />
+              <div className="flex gap-3">
+                <button onClick={() => { setShowModDelete(false); setModReason(''); }} className={`${outlineBtn} h-12`}>Cancelar</button>
+                <button
+                  onClick={() => void modDelete()}
+                  disabled={modReason.trim().length < 5 || busy === 'delete'}
+                  className="flex-1 inline-flex items-center justify-center gap-2 h-12 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold transition active:scale-[0.97] disabled:opacity-50"
+                >
+                  {busy === 'delete' && <Loader2 className="w-4 h-4 animate-spin" />} Eliminar grupo
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
       )}
     </div>
   );
@@ -647,10 +738,29 @@ const GroupForm: React.FC<{ editId?: string; onDone: (id?: string) => void; onCa
     <form onSubmit={save} className="space-y-5 pb-6">
       <div className="flex items-center gap-2">
         <button type="button" onClick={cancel} className={iconBtn} aria-label="Cancelar"><ArrowLeft className="w-5 h-5" /></button>
-        <h2 className="text-3xl font-semibold leading-none">{isEdit ? 'Editar grupo' : 'Nuevo grupo'}</h2>
+        <h2 className="text-3xl font-semibold leading-none">{isEdit ? 'Editar grupo' : 'Proponer un grupo'}</h2>
       </div>
 
       <NoticeBanner notice={notice} />
+
+      {!isEdit && (
+        <p className="flex gap-2.5 p-3.5 rounded-xl bg-sun/30 dark:bg-sun/10 text-sm">
+          <Info className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>Tu grupo se <strong>revisa antes de publicarse</strong>: un administrador verá el nombre, la imagen y la descripción. Evita insultos, contenido sexual y spam.</span>
+        </p>
+      )}
+      {isEdit && existing?.status === 'approved' && (
+        <p className="flex gap-2.5 p-3.5 rounded-xl bg-sun/30 dark:bg-sun/10 text-sm">
+          <Info className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>Si cambias el <strong>nombre, la descripción o la imagen</strong>, el grupo vuelve a revisión. El enlace y la categoría se cambian al momento.</span>
+        </p>
+      )}
+      {isEdit && existing?.status === 'rejected' && (
+        <p className="flex gap-2.5 p-3.5 rounded-xl bg-rose-100 dark:bg-rose-950/50 text-sm text-rose-900 dark:text-rose-200">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span><strong>No pasó la revisión.</strong>{existing.reviewNote && <> {existing.reviewNote}</>} Corrígelo y se enviará de nuevo.</span>
+        </p>
+      )}
 
       <div className="flex items-center gap-4">
         <GroupImage group={preview} className="w-24 h-24 rounded-3xl text-3xl shrink-0" />
@@ -748,7 +858,7 @@ const GroupForm: React.FC<{ editId?: string; onDone: (id?: string) => void; onCa
         <button type="button" onClick={cancel} className={`${outlineBtn} h-12`}>Cancelar</button>
         <button type="submit" disabled={saving || uploading || name.trim().length < 3 || !!linkProblem} className={`${primaryBtn} flex-1`}>
           {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-          {isEdit ? 'Guardar cambios' : 'Crear grupo'}
+          {isEdit ? (existing?.status === 'rejected' ? 'Guardar y reenviar' : 'Guardar cambios') : 'Enviar a revisión'}
         </button>
       </div>
     </form>
@@ -759,9 +869,18 @@ const GroupForm: React.FC<{ editId?: string; onDone: (id?: string) => void; onCa
 // Contenedor
 // ---------------------------------------------------------------------------
 export const GroupsView: React.FC = () => {
+  const { user } = useAuthStore();
   const [view, setView] = useState<View>({ kind: 'list' });
+  const [section, setSection] = useState<'groups' | 'moderation'>('groups');
   const loadGroups = useGroupsStore((s) => s.loadGroups);
+  const loadModeration = useGroupsStore((s) => s.loadModeration);
+  const moderationCount = useGroupsStore((s) => s.submissions.length + s.changeRequests.length);
   const topRef = useRef<HTMLDivElement>(null);
+  const isModerator = !!user && user.role !== 'student';
+
+  useEffect(() => {
+    if (isModerator) void loadModeration();
+  }, [isModerator, loadModeration]);
 
   // Al cambiar de pantalla, volver al inicio (el contenedor con scroll vive fuera de este componente)
   useEffect(() => {
@@ -770,7 +889,17 @@ export const GroupsView: React.FC = () => {
 
   return (
     <div ref={topRef} className="max-w-md w-full mx-auto scroll-mt-4">
-      {view.kind === 'list' && (
+      {view.kind === 'list' && isModerator && (
+        <div className="flex gap-2 mb-4" role="tablist">
+          <button role="tab" aria-selected={section === 'groups'} onClick={() => setSection('groups')} className={chip(section === 'groups')}>Grupos</button>
+          <button role="tab" aria-selected={section === 'moderation'} onClick={() => setSection('moderation')} className={`inline-flex items-center gap-1.5 ${chip(section === 'moderation')}`}>
+            Moderación
+            {moderationCount > 0 && <span className="px-1.5 rounded-full bg-brand-600 text-white text-[10px] leading-4">{moderationCount}</span>}
+          </button>
+        </div>
+      )}
+      {view.kind === 'list' && section === 'moderation' && isModerator && <GroupsModeration />}
+      {view.kind === 'list' && !(section === 'moderation' && isModerator) && (
         <GroupList onOpen={(id) => setView({ kind: 'detail', id })} onCreate={() => setView({ kind: 'form' })} />
       )}
       {view.kind === 'detail' && (
