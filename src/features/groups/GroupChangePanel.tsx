@@ -18,8 +18,10 @@ export const GroupChangePanel: React.FC<{
   group: Group;
   members: GroupMember[] | null;
   isCreator: boolean;
+  /** Ceder el grupo solo se puede cuando ya está aprobado; pedir eliminarlo vale en cualquier estado. */
+  approved: boolean;
   onNotice: (notice: Notice) => void;
-}> = ({ group, members, isCreator, onNotice }) => {
+}> = ({ group, members, isCreator, approved, onNotice }) => {
   const { user } = useAuthStore();
   const { loadChangeRequest, requestChange, cancelChange } = useGroupsStore();
   const [req, setReq] = useState<ChangeRequest | null>(null);
@@ -86,7 +88,7 @@ export const GroupChangePanel: React.FC<{
       <div>
         <h3 className="text-xl font-semibold">Pedir cambios</h3>
         <p className="text-sm text-slate-500 dark:text-haze-400 mt-1">
-          Un grupo aprobado solo lo elimina o lo cede un administrador de UniLink. Mándale una petición con el motivo.
+          Los grupos no se eliminan por cuenta propia: manda una petición con el motivo y un administrador de UniLink la revisa. Mientras tanto el grupo sigue igual.
         </p>
       </div>
 
@@ -111,7 +113,7 @@ export const GroupChangePanel: React.FC<{
               <button onClick={() => setMode('delete')} className={`${outlineBtn} w-full text-rose-700 dark:text-rose-400`}>
                 <Trash2 className="w-4 h-4" /> Pedir que se elimine el grupo
               </button>
-              {isCreator && (
+              {isCreator && approved && (
                 <button
                   onClick={() => setMode('transfer')}
                   disabled={candidates.length === 0}
@@ -120,7 +122,7 @@ export const GroupChangePanel: React.FC<{
                   <UserCog className="w-4 h-4" /> Pedir que lo lleve otra persona
                 </button>
               )}
-              {isCreator && candidates.length === 0 && (
+              {isCreator && approved && candidates.length === 0 && (
                 <p className="text-xs text-slate-500 dark:text-haze-400">Para ceder el grupo, la otra persona primero debe ser miembro.</p>
               )}
             </div>

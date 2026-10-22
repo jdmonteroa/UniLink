@@ -89,8 +89,8 @@ const MyEventCard: React.FC<{ event: MyEvent; onDelete: () => void }> = ({ event
 // ---------------------------------------------------------------------------
 // Detalle
 // ---------------------------------------------------------------------------
-const EventDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBack }) => {
-  const { feed, reportEvent, deleteEvent } = useEventsStore();
+const EventDetail: React.FC<{ id: string; onBack: () => void; onManage: () => void }> = ({ id, onBack, onManage }) => {
+  const { feed, reportEvent } = useEventsStore();
   const event = feed.find((e) => e.id === id);
   const [notice, setNotice] = useNotice();
   const [reporting, setReporting] = useState(false);
@@ -116,14 +116,6 @@ const EventDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBack 
     } else setNotice({ kind: 'error', text: res.message || 'No se pudo enviar el reporte.' });
   };
 
-  const remove = async () => {
-    const ok = await confirmDialog({ title: '¿Eliminar esta publicación?', message: 'Dejará de verse para todos.', confirmLabel: 'Eliminar', tone: 'danger' });
-    if (!ok) return;
-    const res = await deleteEvent(id, event.imagePath);
-    if (res.success) onBack();
-    else setNotice({ kind: 'error', text: res.message || 'No se pudo eliminar.' });
-  };
-
   return (
     <div className="space-y-4 pb-6">
       <button onClick={onBack} className={iconBtn} aria-label="Volver a eventos"><ArrowLeft className="w-5 h-5" /></button>
@@ -142,7 +134,11 @@ const EventDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBack 
       <NoticeBanner notice={notice} />
 
       {event.isMine ? (
-        <button onClick={() => void remove()} className={`${outlineBtn} w-full text-rose-700 dark:text-rose-400`}><Trash2 className="w-4 h-4" /> Eliminar publicación</button>
+        // Eliminar solo está en "Mis publicaciones", no aquí
+        <div className={`${card} text-sm space-y-3`}>
+          <p className="text-slate-600 dark:text-haze-300">Esta es tu publicación. Puedes administrarla, y eliminarla, desde <strong>Mis publicaciones</strong>.</p>
+          <button onClick={onManage} className={`${outlineBtn} w-full`}>Ir a Mis publicaciones</button>
+        </div>
       ) : reporting ? (
         <div className={card}>
           <fieldset className="space-y-2">
@@ -421,7 +417,16 @@ export const EventsView: React.FC<{ defaultTab?: Tab }> = ({ defaultTab = 'feed'
         />
       )}
 
-      {view.kind === 'detail' && <EventDetail id={view.id} onBack={() => setView({ kind: 'tabs' })} />}
+      {view.kind === 'detail' && (
+        <EventDetail
+          id={view.id}
+          onBack={() => setView({ kind: 'tabs' })}
+          onManage={() => {
+            setTab('mine');
+            setView({ kind: 'tabs' });
+          }}
+        />
+      )}
 
       {view.kind === 'tabs' && (
         <div className="space-y-5 pb-4">

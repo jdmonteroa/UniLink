@@ -1882,9 +1882,10 @@ BEGIN
 END;
 $$;
 
--- Eliminar un grupo APROBADO solo lo hace un moderador o administrador de la plataforma (con motivo, que
--- queda en group_moderation_log). Quien lo creó solo puede retirar un grupo que aún no se publicó
--- (en revisión o rechazado); para uno aprobado debe usar request_group_change.
+-- Eliminar un grupo lo hace SOLO un moderador o administrador de la plataforma, con motivo (queda en
+-- group_moderation_log). Quien creó o administra el grupo NUNCA lo elimina por su cuenta, esté en revisión,
+-- rechazado o aprobado: manda una petición con motivo (request_group_change) y la revisa la administración.
+-- Tampoco se puede eliminar directamente un grupo que uno mismo creó.
 -- Devuelve la ruta de la imagen para que la app pueda borrar el archivo.
 DROP FUNCTION IF EXISTS public.delete_group(UUID);
 DROP FUNCTION IF EXISTS public.delete_group(UUID, TEXT);
@@ -1900,18 +1901,17 @@ BEGIN
   SELECT * INTO g FROM public.groups WHERE id = p_group;
   IF NOT FOUND THEN RAISE EXCEPTION 'Ese grupo ya no existe.'; END IF;
 
-  IF public.is_moderator_or_admin() AND g.university_id = public.get_my_university_id() THEN
-    IF note IS NULL OR char_length(note) < 5 THEN RAISE EXCEPTION 'Escribe el motivo de la eliminación (mínimo 5 caracteres).'; END IF;
-    IF char_length(note) > 300 THEN RAISE EXCEPTION 'El motivo puede tener máximo 300 caracteres.'; END IF;
-    INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id, note)
-    VALUES (g.id, g.name, 'deleted', me, g.created_by, note);
-  ELSIF g.created_by = me AND g.status IN ('pending', 'rejected') THEN
-    INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id)
-    VALUES (g.id, g.name, 'withdrawn', me, me);
-  ELSE
-    RAISE EXCEPTION 'Solo un administrador puede eliminar un grupo ya aprobado. Pídelo desde "Pedir cambios".';
+  IF NOT (public.is_moderator_or_admin() AND g.university_id = public.get_my_university_id()) THEN
+    RAISE EXCEPTION 'Los grupos no se eliminan por cuenta propia. Pide la eliminación desde "Pedir cambios" y un administrador la revisará.';
   END IF;
+  IF g.created_by = me THEN
+    RAISE EXCEPTION 'No puedes eliminar directamente un grupo que creaste. Pide su eliminación desde "Pedir cambios".';
+  END IF;
+  IF note IS NULL OR char_length(note) < 5 THEN RAISE EXCEPTION 'Escribe el motivo de la eliminación (mínimo 5 caracteres).'; END IF;
+  IF char_length(note) > 300 THEN RAISE EXCEPTION 'El motivo puede tener máximo 300 caracteres.'; END IF;
 
+  INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id, note)
+  VALUES (g.id, g.name, 'deleted', me, g.created_by, note);
   DELETE FROM public.groups WHERE id = p_group;
   RETURN g.image_path;
 END;
@@ -2163,8 +2163,9 @@ AS $$
   )::INTEGER END;
 $$;
 
--- Quien administra un grupo ya aprobado pide eliminarlo ('delete') o que lo lleve otra persona ('transfer').
--- Siempre con motivo. Lo resuelve un moderador o administrador de la plataforma.
+-- Quien administra un grupo pide eliminarlo ('delete', en cualquier estado: en revisión, rechazado o aprobado) o
+-- que lo lleve otra persona ('transfer', solo grupos aprobados). Siempre con motivo. Lo resuelve un moderador
+-- o administrador de la plataforma.
 DROP FUNCTION IF EXISTS public.request_group_change(UUID, TEXT, TEXT, UUID);
 CREATE FUNCTION public.request_group_change(p_group UUID, p_kind TEXT, p_reason TEXT, p_new_owner UUID DEFAULT NULL)
 RETURNS UUID
@@ -2178,7 +2179,6 @@ DECLARE
 BEGIN
   SELECT * INTO g FROM public.groups WHERE id = p_group AND university_id = public.get_my_university_id();
   IF NOT FOUND THEN RAISE EXCEPTION 'Ese grupo no existe.'; END IF;
-  IF g.status <> 'approved' THEN RAISE EXCEPTION 'Solo los grupos aprobados pueden pedir cambios.'; END IF;
   IF NOT public.is_group_admin(p_group) THEN RAISE EXCEPTION 'Solo los administradores del grupo pueden pedir cambios.'; END IF;
   IF p_kind NOT IN ('delete', 'transfer') THEN RAISE EXCEPTION 'Tipo de petición no válido.'; END IF;
   IF char_length(why) < 10 OR char_length(why) > 500 THEN
@@ -2186,6 +2186,7 @@ BEGIN
   END IF;
 
   IF p_kind = 'transfer' THEN
+    IF g.status <> 'approved' THEN RAISE EXCEPTION 'Solo un grupo aprobado puede pasar a otra persona.'; END IF;
     IF g.created_by <> me THEN RAISE EXCEPTION 'Solo quien creó el grupo puede pedir que otra persona lo lleve.'; END IF;
     IF p_new_owner IS NULL OR p_new_owner = me
        OR NOT EXISTS (SELECT 1 FROM public.group_members WHERE group_id = p_group AND profile_id = p_new_owner) THEN
@@ -2347,16 +2348,19 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
 DECLARE
   me UUID := auth.uid();
+  my_role TEXT;
   r RECORD;
   g RECORD;
   note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
 BEGIN
-  IF NOT public.is_moderator_or_admin() THEN RAISE EXCEPTION 'Solo moderadores pueden resolver peticiones.'; END IF;
+  SELECT role INTO my_role FROM public.profiles WHERE id = me;
+  IF my_role NOT IN ('moderator', 'admin') THEN RAISE EXCEPTION 'Solo moderadores pueden resolver peticiones.'; END IF;
   SELECT * INTO r FROM public.group_change_requests WHERE id = p_request FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'La petición ya no existe.'; END IF;
   IF r.status <> 'pending' THEN RAISE EXCEPTION 'Esta petición ya fue resuelta.'; END IF;
   SELECT * INTO g FROM public.groups WHERE id = r.group_id;
   IF g.university_id <> public.get_my_university_id() THEN RAISE EXCEPTION 'La petición ya no existe.'; END IF;
+  IF r.requested_by = me AND my_role <> 'admin' THEN RAISE EXCEPTION 'Otra persona debe resolver tu petición.'; END IF;
   IF note IS NOT NULL AND char_length(note) > 300 THEN RAISE EXCEPTION 'La nota puede tener máximo 300 caracteres.'; END IF;
 
   IF NOT p_approve THEN

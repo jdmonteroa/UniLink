@@ -456,7 +456,7 @@ interface GroupsState {
   loadGroups: () => Promise<void>;
   createGroup: (input: GroupInput) => Promise<ActionResult & { id?: string }>;
   updateGroup: (id: string, input: GroupInput) => Promise<ActionResult>;
-  /** Quien creó el grupo solo puede retirar uno que aún no se publicó; un moderador elimina con motivo. */
+  /** Solo la administración elimina grupos (con motivo). Quien creó el grupo usa requestChange. */
   deleteGroup: (id: string, note?: string) => Promise<ActionResult>;
   requestChange: (groupId: string, kind: ChangeKind, reason: string, newOwnerId?: string) => Promise<ActionResult>;
   cancelChange: (groupId: string) => Promise<ActionResult>;

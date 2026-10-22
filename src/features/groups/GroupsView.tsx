@@ -401,17 +401,6 @@ const GroupDetail: React.FC<{ id: string; onBack: () => void; onEdit: () => void
     if (ok && (await run('leave', () => store.leaveGroup(id)))) onBack();
   };
 
-  // Quien lo creó solo puede retirar un grupo que todavía no se publicó (en revisión o rechazado)
-  const withdraw = async () => {
-    const ok = await confirmDialog({
-      title: `¿Retirar ${group.name}?`,
-      message: 'Se borrará el grupo y no se enviará a revisión. Esta acción no se puede deshacer.',
-      confirmLabel: 'Retirar grupo',
-      tone: 'danger',
-    });
-    if (ok && (await run('delete', () => store.deleteGroup(id)))) onBack();
-  };
-
   // Un moderador o administrador elimina un grupo aprobado, siempre con motivo
   const modDelete = async () => {
     const ok = await confirmDialog({
@@ -474,7 +463,7 @@ const GroupDetail: React.FC<{ id: string; onBack: () => void; onEdit: () => void
           <Clock className="w-5 h-5 shrink-0 mt-0.5" />
           <span>
             <strong>Tu grupo está en revisión.</strong> Un administrador de UniLink verá el nombre, la imagen y la descripción antes de publicarlo.
-            Mientras tanto nadie más lo ve. Puedes editarlo o retirarlo.
+            Mientras tanto nadie más lo ve. Puedes editarlo, o pedir que se elimine si ya no lo quieres.
           </span>
         </p>
       )}
@@ -607,15 +596,11 @@ const GroupDetail: React.FC<{ id: string; onBack: () => void; onEdit: () => void
           <LogOut className="w-4 h-4" /> Salir del grupo
         </button>
       )}
-      {isAdmin && approved && <GroupChangePanel group={group} members={members} isCreator={isCreator} onNotice={setNotice} />}
+      {/* Eliminar o ceder el grupo NUNCA es directo: se manda una petición con motivo a un administrador */}
+      {isAdmin && <GroupChangePanel group={group} members={members} isCreator={isCreator} approved={approved} onNotice={setNotice} />}
 
-      {isCreator && !approved && (
-        <button onClick={() => void withdraw()} className={`${outlineBtn} w-full text-rose-700 dark:text-rose-400`}>
-          <Trash2 className="w-4 h-4" /> Retirar grupo
-        </button>
-      )}
-
-      {isPlatformMod && approved && (
+      {/* Quien creó el grupo no lo elimina directo ni siquiera siendo administrador: usa "Pedir cambios" */}
+      {isPlatformMod && approved && !isCreator && (
         <section className={card} aria-label="Administración de UniLink">
           <div>
             <h3 className="text-xl font-semibold">Administración de UniLink</h3>
