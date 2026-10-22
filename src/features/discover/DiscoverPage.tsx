@@ -13,6 +13,8 @@ import { FriendsList } from '@/features/discover/FriendsList';
 import { ConnectionsView } from '@/features/connections/ConnectionsView';
 import { useConnectionsStore, attentionCount } from '@/features/connections/connectionsStore';
 import { CHAT_ENABLED } from '@/lib/features';
+import { DownloadAppButton } from '@/components/DownloadAppButton';
+import { isAndroid } from '@/lib/android';
 import { useGroupsStore } from '@/features/groups/groupsStore';
 import { EventsView } from '@/features/events/EventsView';
 import { useEventsStore } from '@/features/events/eventsStore';
@@ -404,6 +406,9 @@ export const DiscoverPage: React.FC = () => {
               <span className="px-2 py-0.5 rounded-full bg-sun text-slate-900 text-[10px] font-bold rotate-[-3deg] whitespace-nowrap">
                 demo · no se guarda nada
               </span>
+            ) : isAndroid() ? (
+              // En Android desde el navegador: invita a descargar la app (el botón se oculta si ya es la app)
+              <DownloadAppButton className="h-10 px-3.5 text-sm" />
             ) : (
               user?.campus && <span className="text-xs text-slate-500 dark:text-haze-400 truncate">{user.campus}</span>
             )}

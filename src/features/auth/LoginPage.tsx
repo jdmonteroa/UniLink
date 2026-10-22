@@ -15,6 +15,7 @@ import {
 import { CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Wordmark, Highlight, STICKER } from '@/components/brand';
+import { DownloadAppButton } from '@/components/DownloadAppButton';
 
 /*
   Login — "campus, pero ligero".
@@ -110,7 +111,10 @@ export const LoginPage: React.FC = () => {
     >
       {/* Barra superior */}
       <header className="w-full max-w-6xl mx-auto px-5 sm:px-8 pt-5 sm:pt-7 flex items-center justify-between">
-        <Wordmark className="text-[1.75rem]" />
+        <div className="flex items-center gap-3 min-w-0">
+          <Wordmark className="text-[1.75rem]" />
+          <DownloadAppButton />
+        </div>
 
         <motion.button
           type="button"
