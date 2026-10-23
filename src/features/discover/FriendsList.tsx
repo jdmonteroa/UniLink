@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, SlidersHorizontal, Handshake, X, GraduationCap, Loader2, RefreshCw, AlertCircle, Users } from 'lucide-react';
+import { Search, SlidersHorizontal, Handshake, Check, MessageCircle, GraduationCap, Loader2, RefreshCw, AlertCircle, Users } from 'lucide-react';
 import { useAuthStore, formatSemester } from '@/features/auth/authStore';
 import { supabase, friendlyError } from '@/lib/supabaseClient';
 import { photoUrl } from '@/lib/photos';
@@ -8,7 +8,7 @@ import { DEMO_CATALOG, loadCatalog, type Catalog } from '@/lib/catalog';
 import { Avatar } from '@/components/Avatar';
 import { CheckBadgeIcon } from '@/components/icons';
 import { spring } from '@/components/brand';
-import type { DiscoverStudent } from '@/features/discover/DiscoverPage';
+import { useConnectionsStore } from '@/features/connections/connectionsStore';
 
 const PAGE_SIZE = 40;
 const MAX_CHIPS = 4;
@@ -28,6 +28,10 @@ interface Friend {
   sharedSubjects: string[];
   compatibility: number;
   reasons: string[];
+  /** Ya mostraste interés (queda pendiente hasta que la otra persona también lo haga). */
+  liked: boolean;
+  /** Ya son match: aparece en Matches. */
+  matched: boolean;
 }
 
 interface StudentRow {
@@ -45,6 +49,8 @@ interface StudentRow {
   shared_subjects: string[] | null;
   shared_interests: string[] | null;
   interests: string[] | null;
+  my_action: 'like' | 'pass' | null;
+  is_matched: boolean | null;
 }
 
 const mapRow = (r: StudentRow): Friend => ({
@@ -62,15 +68,17 @@ const mapRow = (r: StudentRow): Friend => ({
   sharedSubjects: r.shared_subjects || [],
   compatibility: r.compatibility_score ?? 0,
   reasons: r.match_reasons || [],
+  liked: r.my_action === 'like',
+  matched: Boolean(r.is_matched),
 });
 
 // Estudiantes de ejemplo solo para el modo demo (los filtros se aplican aquí mismo)
 const DEMO_FRIENDS: Friend[] = [
-  { id: 'demo-valeria', name: 'Valeria Lozano', age: 20, career: 'Licenciatura en Diseño Gráfico', campus: 'Campus Central UAA', semester: 4, bio: 'Diseño, café y cineclub. Busco con quién ir a exposiciones.', verified: true, photo: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=300&q=80', interests: ['Fotografía 35mm', 'Cineclub', 'Café de Especialidad', 'Museos', 'Música Indie'], sharedInterests: ['Música Indie'], sharedSubjects: [], compatibility: 82, reasons: ['A ambos les gusta: Música Indie'] },
-  { id: 'demo-diego', name: 'Diego Ramírez', age: 21, career: 'Ingeniería en Sistemas Computacionales', campus: 'Campus Central UAA', semester: 6, bio: 'Hago proyectos de IA y juego ajedrez en el receso.', verified: true, photo: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=300&q=80', interests: ['Programación', 'Inteligencia Artificial', 'Ajedrez', 'Videojuegos', 'Running'], sharedInterests: ['Programación', 'Ajedrez'], sharedSubjects: ['Estructura de Datos', 'Inteligencia Artificial'], compatibility: 94, reasons: ['Comparten 2 materias', 'Misma carrera'] },
-  { id: 'demo-sofia', name: 'Sofía Álvarez', age: 19, career: 'Ingeniería Biomédica', campus: 'Campus Sur UAA', semester: 4, bio: 'Bioseñales y gimnasio. Doy asesorías de física.', verified: false, photo: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80', interests: ['Robótica', 'Gimnasio', 'Yoga', 'Viajar'], sharedInterests: [], sharedSubjects: [], compatibility: 68, reasons: [] },
-  { id: 'demo-leo', name: 'Leonardo Campos', age: 22, career: 'Ingeniería en Sistemas Computacionales', campus: 'Campus Sur UAA', semester: 9, bio: 'Último semestre. Asesorías de Estructura de Datos a cambio de café.', verified: true, photo: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=300&q=80', interests: ['Programación', 'Ciberseguridad', 'Café de Especialidad', 'Senderismo'], sharedInterests: ['Programación'], sharedSubjects: ['Estructura de Datos'], compatibility: 88, reasons: ['Comparten 1 materia', 'Misma carrera'] },
-  { id: 'demo-ximena', name: 'Ximena Reyes', age: 19, career: 'Médico Cirujano', campus: 'Campus Central UAA', semester: 3, bio: 'Medicina, tercer semestre. Voluntaria en la Cruz Roja.', verified: true, photo: 'https://images.unsplash.com/photo-1531123897727-8f129e1688ce?auto=format&fit=crop&w=300&q=80', interests: ['Voluntariado', 'Lectura', 'Cocinar', 'Perros y Gatos'], sharedInterests: [], sharedSubjects: [], compatibility: 61, reasons: [] },
+  { id: 'demo-valeria', name: 'Valeria Lozano', age: 20, career: 'Licenciatura en Diseño Gráfico', campus: 'Campus Central UAA', semester: 4, bio: 'Diseño, café y cineclub. Busco con quién ir a exposiciones.', verified: true, photo: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=300&q=80', interests: ['Fotografía 35mm', 'Cineclub', 'Café de Especialidad', 'Museos', 'Música Indie'], sharedInterests: ['Música Indie'], sharedSubjects: [], compatibility: 82, reasons: ['A ambos les gusta: Música Indie'], liked: false, matched: false },
+  { id: 'demo-diego', name: 'Diego Ramírez', age: 21, career: 'Ingeniería en Sistemas Computacionales', campus: 'Campus Central UAA', semester: 6, bio: 'Hago proyectos de IA y juego ajedrez en el receso.', verified: true, photo: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=300&q=80', interests: ['Programación', 'Inteligencia Artificial', 'Ajedrez', 'Videojuegos', 'Running'], sharedInterests: ['Programación', 'Ajedrez'], sharedSubjects: ['Estructura de Datos', 'Inteligencia Artificial'], compatibility: 94, reasons: ['Comparten 2 materias', 'Misma carrera'], liked: false, matched: false },
+  { id: 'demo-sofia', name: 'Sofía Álvarez', age: 19, career: 'Ingeniería Biomédica', campus: 'Campus Sur UAA', semester: 4, bio: 'Bioseñales y gimnasio. Doy asesorías de física.', verified: false, photo: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80', interests: ['Robótica', 'Gimnasio', 'Yoga', 'Viajar'], sharedInterests: [], sharedSubjects: [], compatibility: 68, reasons: [], liked: false, matched: false },
+  { id: 'demo-leo', name: 'Leonardo Campos', age: 22, career: 'Ingeniería en Sistemas Computacionales', campus: 'Campus Sur UAA', semester: 9, bio: 'Último semestre. Asesorías de Estructura de Datos a cambio de café.', verified: true, photo: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=300&q=80', interests: ['Programación', 'Ciberseguridad', 'Café de Especialidad', 'Senderismo'], sharedInterests: ['Programación'], sharedSubjects: ['Estructura de Datos'], compatibility: 88, reasons: ['Comparten 1 materia', 'Misma carrera'], liked: false, matched: false },
+  { id: 'demo-ximena', name: 'Ximena Reyes', age: 19, career: 'Médico Cirujano', campus: 'Campus Central UAA', semester: 3, bio: 'Medicina, tercer semestre. Voluntaria en la Cruz Roja.', verified: true, photo: 'https://images.unsplash.com/photo-1531123897727-8f129e1688ce?auto=format&fit=crop&w=300&q=80', interests: ['Voluntariado', 'Lectura', 'Cocinar', 'Perros y Gatos'], sharedInterests: [], sharedSubjects: [], compatibility: 61, reasons: [], liked: false, matched: false },
 ];
 
 interface Filters {
@@ -105,7 +113,7 @@ function useDebounced<T>(value: T, ms: number): T {
 // ---------------------------------------------------------------------------
 // Fila de la lista: foto, carrera y lo que le gusta hacer
 // ---------------------------------------------------------------------------
-const FriendRow: React.FC<{ friend: Friend; busy: boolean; onLike: () => void; onHide: () => void }> = ({ friend, busy, onLike, onHide }) => {
+const FriendRow: React.FC<{ friend: Friend; busy: boolean; onLike: () => void; onOpenChat: () => void }> = ({ friend, busy, onLike, onOpenChat }) => {
   const [open, setOpen] = useState(false);
   const shown = [...friend.interests].sort((a, b) => Number(friend.sharedInterests.includes(b)) - Number(friend.sharedInterests.includes(a)));
   const first = friend.name.split(' ')[0];
@@ -155,27 +163,39 @@ const FriendRow: React.FC<{ friend: Friend; busy: boolean; onLike: () => void; o
           </span>
         </button>
 
-        <div className="shrink-0 flex flex-col items-center gap-2">
-          <motion.button
-            whileTap={{ scale: 0.88 }}
-            transition={spring}
-            onClick={onLike}
-            disabled={busy}
-            className="w-11 h-11 flex items-center justify-center rounded-full bg-brand-600 hover:bg-brand-700 text-white shadow-glow-brand transition-colors disabled:opacity-50"
-            aria-label={`Me interesa ${first}`}
-            title="Me interesa"
-          >
-            {busy ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <Handshake className="w-5 h-5" strokeWidth={2.25} />}
-          </motion.button>
-          <button
-            onClick={onHide}
-            disabled={busy}
-            className="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 dark:text-haze-400 hover:bg-haze-100 dark:hover:bg-ink-800 hover:text-slate-900 dark:hover:text-slate-50 transition disabled:opacity-50"
-            aria-label={`Ocultar a ${first}`}
-            title="Ocultar"
-          >
-            <X className="w-4.5 h-4.5" />
-          </button>
+        <div className="shrink-0 flex flex-col items-center gap-1">
+          {friend.matched ? (
+            <>
+              <button
+                onClick={onOpenChat}
+                className="w-11 h-11 flex items-center justify-center rounded-full bg-mint text-slate-900 hover:-rotate-6 transition"
+                aria-label={`Abrir el chat con ${first}`}
+                title="Ya son match: abrir chat"
+              >
+                <MessageCircle className="w-5 h-5" />
+              </button>
+              <span className="text-[10px] font-semibold text-slate-500 dark:text-haze-400">En Matches</span>
+            </>
+          ) : friend.liked ? (
+            <>
+              <span className="w-11 h-11 flex items-center justify-center rounded-full bg-brand-50 dark:bg-brand-950/50 text-brand-600 dark:text-brand-400" title="Ya le mostraste interés">
+                <Check className="w-5 h-5" strokeWidth={2.5} />
+              </span>
+              <span className="text-[10px] font-semibold text-slate-500 dark:text-haze-400">Pendiente</span>
+            </>
+          ) : (
+            <motion.button
+              whileTap={{ scale: 0.88 }}
+              transition={spring}
+              onClick={onLike}
+              disabled={busy}
+              className="w-11 h-11 flex items-center justify-center rounded-full bg-brand-600 hover:bg-brand-700 text-white shadow-glow-brand transition-colors disabled:opacity-50"
+              aria-label={`Me interesa ${first}`}
+              title="Me interesa"
+            >
+              {busy ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <Handshake className="w-5 h-5" strokeWidth={2.25} />}
+            </motion.button>
+          )}
         </div>
       </div>
 
@@ -214,12 +234,15 @@ interface FriendsListProps {
   /** false cuando la persona apagó el modo Amistades en su perfil. */
   active: boolean;
   onGoProfile: () => void;
-  onMatch: (student: DiscoverStudent, matchId?: string) => void;
+  /** Abre la pestaña Matches en ese match (para escribirse). */
+  onOpenMatch: (matchId: string) => void;
   onNotice: (message: string) => void;
 }
 
-export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, onMatch, onNotice }) => {
+export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, onOpenMatch, onNotice }) => {
   const { user, isDemo } = useAuthStore();
+  const connections = useConnectionsStore((s) => s.connections);
+  const loadConnections = useConnectionsStore((s) => s.loadConnections);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [showFilters, setShowFilters] = useState(false);
@@ -327,37 +350,48 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
     }
   };
 
-  const decide = async (friend: Friend, action: 'like' | 'pass') => {
+  // En Amistades nadie desaparece de la lista: "Me interesa" solo cambia su estado
+  const markLiked = (id: string, matched: boolean) =>
+    setFriends((prev) => {
+      const next = prev.map((f) => (f.id === id ? { ...f, liked: true, matched } : f));
+      // Las personas ya conectadas pasan al final, igual que lo ordena el servidor
+      return [...next.filter((f) => !f.liked && !f.matched), ...next.filter((f) => f.liked || f.matched)];
+    });
+
+  const like = async (friend: Friend) => {
     if (!user || busyId) return;
     setBusyId(friend.id);
-    const remove = () => setFriends((prev) => prev.filter((f) => f.id !== friend.id));
+    const first = friend.name.split(' ')[0];
 
     if (isDemo) {
-      remove();
+      const matched = friend.compatibility >= 70;
+      markLiked(friend.id, matched);
+      onNotice(matched ? `¡Ahora tú y ${first} son match! Ya pueden escribirse en Matches.` : `Le avisamos a ${first} que te interesa. Si es mutuo, aparecerá en Matches.`);
       setBusyId(null);
-      if (action === 'like' && friend.compatibility >= 70) onMatch(toStudent(friend));
       return;
     }
 
-    const { error: swipeError } = await supabase.from('swipes').insert({ from_id: user.id, to_id: friend.id, mode: 'friendship', action });
-    if (swipeError && swipeError.code !== '23505') {
+    const { data: matchId, error: swipeError } = await supabase.rpc('record_swipe', { p_to: friend.id, p_mode: 'friendship', p_action: 'like' });
+    if (swipeError) {
       setBusyId(null);
       onNotice(friendlyError(swipeError, 'No se pudo registrar tu respuesta.'));
       return;
     }
-    remove();
-    if (action === 'like') {
-      const { data } = await supabase
-        .from('matches')
-        .select('id')
-        .eq('mode', 'friendship')
-        .eq('is_active', true)
-        .or(`and(user_a.eq.${user.id},user_b.eq.${friend.id}),and(user_a.eq.${friend.id},user_b.eq.${user.id})`)
-        .maybeSingle();
-      if (data?.id) onMatch(toStudent(friend), data.id);
-      else onNotice(`Le avisamos a ${friend.name.split(' ')[0]} que te interesa. Si es mutuo, aparecerá en Matches.`);
+    markLiked(friend.id, Boolean(matchId));
+    if (matchId) {
+      // Sin confeti ni ventana: en Amistades la persona simplemente aparece en Matches
+      onNotice(`¡Ahora tú y ${first} son match! Ya pueden escribirse en Matches.`);
+      void loadConnections();
+    } else {
+      onNotice(`Le avisamos a ${first} que te interesa. Si es mutuo, aparecerá en Matches.`);
     }
     setBusyId(null);
+  };
+
+  const openChat = (friend: Friend) => {
+    const found = connections.find((c) => c.mode === 'friendship' && c.other.id === friend.id);
+    if (found) onOpenMatch(found.matchId);
+    else void loadConnections().then(() => onNotice('Búscalo en la pestaña Matches.'));
   };
 
   // Filtros rápidos pensados para estudios
@@ -501,7 +535,7 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
           <p className="text-xs text-slate-500 dark:text-haze-400">{visible.length} {visible.length === 1 ? 'estudiante' : 'estudiantes'}{hasMore ? ' o más' : ''}. Toca una tarjeta para ver más.</p>
           <ul className="space-y-3">
             {visible.map((f) => (
-              <FriendRow key={f.id} friend={f} busy={busyId === f.id} onLike={() => void decide(f, 'like')} onHide={() => void decide(f, 'pass')} />
+              <FriendRow key={f.id} friend={f} busy={busyId === f.id} onLike={() => void like(f)} onOpenChat={() => openChat(f)} />
             ))}
           </ul>
           {hasMore && (
@@ -514,22 +548,3 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
     </div>
   );
 };
-
-/** Forma que espera la pantalla de "¡Hay match!". */
-function toStudent(f: Friend): DiscoverStudent {
-  return {
-    id: f.id,
-    name: f.name,
-    age: f.age,
-    career: f.career,
-    campus: f.campus,
-    semester: f.semester,
-    compatibility: f.compatibility,
-    reasons: f.reasons,
-    sharedSubjects: f.sharedSubjects,
-    bio: f.bio,
-    tags: f.interests,
-    photos: f.photo ? [f.photo] : [],
-    verified: f.verified,
-  };
-}

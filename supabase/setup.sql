@@ -474,9 +474,11 @@ USING (public.is_match_participant(match_id));
 
 -- Mensajes
 DROP POLICY IF EXISTS "Ver mensajes de mis conversaciones" ON public.messages;
+-- Chat temporal: un mensaje deja de verse a las 24 horas (y purge_expired_messages lo borra de verdad).
 CREATE POLICY "Ver mensajes de mis conversaciones" ON public.messages FOR SELECT TO authenticated
 USING (
   is_hidden = FALSE
+  AND created_at > NOW() - INTERVAL '24 hours'
   AND EXISTS (
     SELECT 1 FROM public.conversations c
     WHERE c.id = messages.conversation_id AND public.is_match_participant(c.match_id)
@@ -821,8 +823,9 @@ INSERT INTO public.matching_weights (key, weight) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 DROP FUNCTION IF EXISTS public.get_recommendations(TEXT, INTEGER);
+DROP FUNCTION IF EXISTS public.recommendations_core(TEXT, INTEGER, BOOLEAN);
 
-CREATE FUNCTION public.get_recommendations(target_mode TEXT, result_limit INTEGER DEFAULT 20)
+CREATE FUNCTION public.recommendations_core(target_mode TEXT, result_limit INTEGER, include_evaluated BOOLEAN)
 RETURNS TABLE (
   profile_id UUID,
   full_name TEXT,
@@ -840,7 +843,9 @@ RETURNS TABLE (
   shared_subjects JSONB,
   shared_interests JSONB,
   interests JSONB,
-  schedule_overlap TEXT
+  schedule_overlap TEXT,
+  my_action TEXT,
+  is_matched BOOLEAN
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
 AS $$
@@ -883,7 +888,13 @@ BEGIN
       p.bio AS c_bio, p.semester AS c_semester, p.is_photo_verified AS c_verified,
       p.campus_id AS c_campus, p.career_id AS c_career, p.last_active_at AS c_active,
       car.name AS c_career_name, car.area AS c_area, cam.name AS c_campus_name,
-      EXTRACT(YEAR FROM age(p.birth_date))::INTEGER AS c_age
+      EXTRACT(YEAR FROM age(p.birth_date))::INTEGER AS c_age,
+      ARRAY(SELECT pi.interest_id FROM public.profile_interests pi WHERE pi.profile_id = p.id) AS c_ints,
+      (SELECT s.action FROM public.swipes s WHERE s.from_id = me AND s.to_id = p.id AND s.mode = target_mode) AS c_action,
+      EXISTS (
+        SELECT 1 FROM public.matches mt
+        WHERE mt.user_a = LEAST(me, p.id) AND mt.user_b = GREATEST(me, p.id) AND mt.mode = target_mode AND mt.is_active = TRUE
+      ) AS c_matched
     FROM public.profiles p
     LEFT JOIN public.careers car ON car.id = p.career_id
     LEFT JOIN public.campuses cam ON cam.id = p.campus_id
@@ -893,10 +904,14 @@ BEGIN
       AND p.role = 'student' -- moderadores y administradores no participan en Descubrir
       AND p.is_paused = FALSE
       AND (p.is_suspended = FALSE OR (p.suspended_until IS NOT NULL AND p.suspended_until < NOW()))
-      AND NOT EXISTS (
+      -- Un "Me interesa" saca a la persona de las recomendaciones (ya está pendiente o es un match).
+      -- Un "Pasar" NO la oculta para siempre: solo descansa 3 días y después puede volver a salir, con menos
+      -- prioridad si se parece a perfiles que pasaste. En la lista de Amistades (include_evaluated) siempre salen todos.
+      AND (include_evaluated OR NOT EXISTS (
         SELECT 1 FROM public.swipes s
         WHERE s.from_id = me AND s.to_id = p.id AND s.mode = target_mode
-      )
+          AND (s.action = 'like' OR s.created_at > NOW() - INTERVAL '3 days')
+      ))
       AND NOT EXISTS (
         SELECT 1 FROM public.blocks b
         WHERE (b.blocker_id = me AND b.blocked_id = p.id) OR (b.blocker_id = p.id AND b.blocked_id = me)
@@ -923,6 +938,17 @@ BEGIN
         )
       )
   ),
+  -- Los últimos perfiles que pasé: dejan de recomendarse cosas parecidas (intereses y carrera)
+  passed AS (
+    SELECT q.id AS q_id, q.career_id AS q_career,
+           ARRAY(SELECT pi.interest_id FROM public.profile_interests pi WHERE pi.profile_id = q.id) AS q_ints
+    FROM (
+      SELECT s.to_id FROM public.swipes s
+      WHERE s.from_id = me AND s.mode = target_mode AND s.action = 'pass'
+      ORDER BY s.created_at DESC LIMIT 20
+    ) ps
+    JOIN public.profiles q ON q.id = ps.to_id
+  ),
   scored AS (
     SELECT
       c.*,
@@ -942,7 +968,16 @@ BEGIN
       ) AS ints,
       (SELECT COUNT(*) FROM public.profile_interests x WHERE x.profile_id IN (me, c.c_id))::NUMERIC AS ints_rows,
       ov.minutes AS ov_minutes,
-      ov.label AS ov_label
+      ov.label AS ov_label,
+      -- Parecido máximo (0 a 1.25) con alguno de los perfiles que pasé
+      CASE WHEN include_evaluated THEN 0 ELSE COALESCE((
+        SELECT MAX(
+          CASE WHEN cardinality(c.c_ints) + cardinality(pq.q_ints) = 0 THEN 0
+               ELSE cardinality(ARRAY(SELECT unnest(c.c_ints) INTERSECT SELECT unnest(pq.q_ints)))::NUMERIC
+                    / NULLIF(cardinality(ARRAY(SELECT unnest(c.c_ints) UNION SELECT unnest(pq.q_ints))), 0) END
+          + CASE WHEN pq.q_career IS NOT NULL AND pq.q_career = c.c_career THEN 0.25 ELSE 0 END
+        ) FROM passed pq
+      ), 0) END AS pass_sim
     FROM cand c
     LEFT JOIN LATERAL (
       SELECT
@@ -983,7 +1018,7 @@ BEGIN
       + w_cam * CASE WHEN sc.c_campus = my_campus THEN 1 ELSE 0 END
       + w_act * CASE WHEN sc.c_active > NOW() - INTERVAL '3 days' THEN 1
                      WHEN sc.c_active > NOW() - INTERVAL '14 days' THEN 0.5 ELSE 0 END
-    ) / w_total))::INTEGER,
+    ) / w_total * (1 - LEAST(0.4, 0.5 * sc.pass_sim))))::INTEGER,
     to_jsonb(array_remove(ARRAY[
       CASE WHEN cardinality(sc.subs) = 1 THEN 'Comparten 1 materia'
            WHEN cardinality(sc.subs) > 1 THEN 'Comparten ' || cardinality(sc.subs) || ' materias' END,
@@ -999,11 +1034,32 @@ BEGIN
       FROM public.profile_interests pi JOIN public.interests i ON i.id = pi.interest_id
       WHERE pi.profile_id = sc.c_id
     ), '[]'::jsonb),
-    sc.ov_label
+    sc.ov_label,
+    sc.c_action,
+    COALESCE(sc.c_matched, FALSE)
   FROM scored sc
-  ORDER BY 12 DESC, sc.c_active DESC NULLS LAST
+  -- Con include_evaluated las personas con las que ya hay interés o match van al final
+  ORDER BY (sc.c_matched OR COALESCE(sc.c_action, '') = 'like') ASC, 12 DESC, sc.c_active DESC NULLS LAST
   LIMIT result_limit;
 END;
+$$;
+
+
+REVOKE EXECUTE ON FUNCTION public.recommendations_core(TEXT, INTEGER, BOOLEAN) FROM PUBLIC, anon, authenticated;
+
+-- Pareja (tarjetas): recomendaciones sin quien ya tiene "Me interesa" ni los "Pasar" de los últimos 3 días.
+CREATE FUNCTION public.get_recommendations(target_mode TEXT, result_limit INTEGER DEFAULT 20)
+RETURNS TABLE (
+  profile_id UUID, full_name TEXT, age INTEGER, gender TEXT, pronouns TEXT, career_name TEXT, campus_name TEXT,
+  semester INTEGER, bio TEXT, is_photo_verified BOOLEAN, photos JSONB, compatibility_score INTEGER,
+  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB, schedule_overlap TEXT
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT r.profile_id, r.full_name, r.age, r.gender, r.pronouns, r.career_name, r.campus_name,
+         r.semester, r.bio, r.is_photo_verified, r.photos, r.compatibility_score,
+         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests, r.schedule_overlap
+  FROM public.recommendations_core(target_mode, result_limit, FALSE) r;
 $$;
 
 
@@ -1234,7 +1290,8 @@ CREATE FUNCTION public.list_students(
 RETURNS TABLE (
   profile_id UUID, full_name TEXT, age INTEGER, career_name TEXT, campus_name TEXT, semester INTEGER,
   bio TEXT, is_photo_verified BOOLEAN, photos JSONB, compatibility_score INTEGER,
-  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB
+  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB,
+  my_action TEXT, is_matched BOOLEAN
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
 AS $$
@@ -1247,11 +1304,15 @@ BEGIN
     q := '%' || replace(replace(replace(lower(left(q, 60)), '\', '\\'), '%', '\%'), '_', '\_') || '%';
   END IF;
 
+  -- En Amistades SIEMPRE hay gente: se muestran todas las personas compatibles (también las que ya
+  -- evaluaste), con su estado (my_action = 'like' si ya les mostraste interés; is_matched si ya conectaron),
+  -- y las conectadas van al final.
   RETURN QUERY
   SELECT r.profile_id, r.full_name, r.age, r.career_name, r.campus_name, r.semester,
          r.bio, r.is_photo_verified, r.photos, r.compatibility_score,
-         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests
-  FROM public.get_recommendations(p_mode, 1000) r
+         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests,
+         r.my_action, r.is_matched
+  FROM public.recommendations_core(p_mode, 1000, TRUE) r
   JOIN public.profiles p ON p.id = r.profile_id
   WHERE (p_career IS NULL OR p.career_id = p_career)
     AND (p_campus IS NULL OR p.campus_id = p_campus)
@@ -1265,14 +1326,52 @@ BEGIN
          OR lower(COALESCE(r.bio, '')) LIKE q
          OR lower(COALESCE(r.career_name, '')) LIKE q
          OR lower(r.interests::TEXT) LIKE q)
-  ORDER BY r.compatibility_score DESC, r.full_name
+  ORDER BY (r.is_matched OR COALESCE(r.my_action, '') = 'like') ASC, r.compatibility_score DESC, r.full_name
   LIMIT LEAST(GREATEST(COALESCE(p_limit, 40), 1), 100)
   OFFSET GREATEST(COALESCE(p_offset, 0), 0);
 END;
 $$;
 
+-- Registra "Me interesa" o "Pasar". Se puede cambiar de opinión (la respuesta nueva reemplaza a la anterior).
+-- Devuelve el id del match si con este "Me interesa" se formó uno.
+DROP FUNCTION IF EXISTS public.record_swipe(UUID, TEXT, TEXT);
+CREATE FUNCTION public.record_swipe(p_to UUID, p_mode TEXT, p_action TEXT)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  match_id UUID;
+BEGIN
+  IF me IS NULL OR p_to IS NULL OR p_to = me THEN RAISE EXCEPTION 'Operación no válida.'; END IF;
+  IF p_mode NOT IN ('friendship', 'dating') THEN RAISE EXCEPTION 'Modo no válido.'; END IF;
+  IF p_action NOT IN ('like', 'pass') THEN RAISE EXCEPTION 'Acción no válida.'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.profiles a JOIN public.profiles b ON b.university_id = a.university_id
+    WHERE a.id = me AND b.id = p_to
+  ) OR EXISTS (
+    SELECT 1 FROM public.blocks b
+    WHERE (b.blocker_id = me AND b.blocked_id = p_to) OR (b.blocker_id = p_to AND b.blocked_id = me)
+  ) THEN
+    RAISE EXCEPTION 'Esa persona no está disponible.';
+  END IF;
+
+  -- El disparador handle_swipe_action revisa el límite diario y crea el match si es mutuo.
+  INSERT INTO public.swipes (from_id, to_id, mode, action) VALUES (me, p_to, p_mode, p_action)
+  ON CONFLICT (from_id, to_id, mode) DO UPDATE SET action = EXCLUDED.action, created_at = NOW();
+
+  IF p_action = 'like' THEN
+    SELECT m.id INTO match_id FROM public.matches m
+    WHERE m.user_a = LEAST(me, p_to) AND m.user_b = GREATEST(me, p_to) AND m.mode = p_mode AND m.is_active = TRUE;
+  END IF;
+  RETURN match_id;
+END;
+$$;
+
 GRANT EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.record_swipe(UUID, TEXT, TEXT) TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.record_swipe(UUID, TEXT, TEXT) FROM anon;
 
 -- ------------------------------------------------------------------------------
 -- 2.15 ENCUENTROS (reemplazan al chat entre matches)
@@ -1550,7 +1649,8 @@ RETURNS TABLE (
   other_bio TEXT, other_photo TEXT, other_instagram TEXT, other_verified BOOLEAN, other_interests JSONB,
   meetup_id UUID, meetup_status TEXT, meetup_proposer_is_me BOOLEAN, meetup_place TEXT, meetup_when TIMESTAMPTZ,
   meetup_round INTEGER, meetup_note TEXT, meetup_response_note TEXT, meetup_updated_at TIMESTAMPTZ,
-  needs_attention BOOLEAN
+  needs_attention BOOLEAN,
+  conversation_id UUID, last_message TEXT, last_message_at TIMESTAMPTZ, last_sender_id UUID, unread_count INTEGER
 )
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
@@ -1559,6 +1659,7 @@ DECLARE me UUID := auth.uid();
 BEGIN
   IF me IS NULL THEN RETURN; END IF;
   PERFORM public.expire_my_stale_meetups();
+  PERFORM public.purge_expired_messages();
   RETURN QUERY
   SELECT m.id, m.mode, m.created_at,
          o.id, o.full_name, car.name, cam.name, o.semester,
@@ -1575,8 +1676,10 @@ BEGIN
            (cur.status = 'pending' AND cur.recipient_id = me)
            OR (cur.status IN ('accepted', 'declined', 'cancelled')
                AND cur.updated_by IS DISTINCT FROM me
-               AND cur.updated_at > COALESCE(rd.seen_at, '-infinity'::TIMESTAMPTZ)),
-           FALSE)
+               AND cur.updated_at > COALESCE(rd.seen_at, '-infinity'::TIMESTAMPTZ))
+           OR COALESCE(chat.unread, 0) > 0,
+           FALSE),
+         conv.id, chat.last_message, chat.last_at, chat.last_sender, COALESCE(chat.unread, 0)
   FROM public.matches m
   JOIN public.profiles o ON o.id = CASE WHEN m.user_a = me THEN m.user_b ELSE m.user_a END
   LEFT JOIN public.careers car ON car.id = o.career_id
@@ -1585,13 +1688,29 @@ BEGIN
   LEFT JOIN LATERAL (
     SELECT x.* FROM public.meetups x WHERE x.match_id = m.id ORDER BY x.created_at DESC LIMIT 1
   ) cur ON TRUE
+  LEFT JOIN public.conversations conv ON conv.match_id = m.id
+  LEFT JOIN LATERAL (
+    SELECT
+      (SELECT x.content FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.is_hidden = FALSE AND x.created_at > NOW() - INTERVAL '24 hours'
+        ORDER BY x.created_at DESC LIMIT 1) AS last_message,
+      (SELECT x.created_at FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.is_hidden = FALSE AND x.created_at > NOW() - INTERVAL '24 hours'
+        ORDER BY x.created_at DESC LIMIT 1) AS last_at,
+      (SELECT x.sender_id FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.is_hidden = FALSE AND x.created_at > NOW() - INTERVAL '24 hours'
+        ORDER BY x.created_at DESC LIMIT 1) AS last_sender,
+      (SELECT COUNT(*)::INTEGER FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.sender_id <> me AND x.read_at IS NULL AND x.is_hidden = FALSE
+          AND x.created_at > NOW() - INTERVAL '24 hours') AS unread
+  ) chat ON TRUE
   WHERE me IN (m.user_a, m.user_b)
     AND m.is_active = TRUE
     AND NOT EXISTS (
       SELECT 1 FROM public.blocks b
       WHERE (b.blocker_id = me AND b.blocked_id = o.id) OR (b.blocker_id = o.id AND b.blocked_id = me)
     )
-  ORDER BY 23 DESC, COALESCE(cur.updated_at, m.created_at) DESC;
+  ORDER BY 23 DESC, GREATEST(COALESCE(cur.updated_at, m.created_at), COALESCE(chat.last_at, m.created_at)) DESC;
 END;
 $$;
 
@@ -1619,6 +1738,82 @@ REVOKE EXECUTE ON FUNCTION public.cancel_meetup(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.mark_match_seen(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_match_meetups(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_my_connections() FROM anon;
+
+
+-- ------------------------------------------------------------------------------
+-- 2.16 CHAT TEMPORAL (los mensajes se borran a las 24 horas)
+-- Cada match (Amistades y Pareja) tiene un chat cuyos mensajes caducan a las 24 h:
+--   * Dejan de VERSE a las 24 h aunque todavía no se hayan borrado (política de lectura de messages).
+--   * purge_expired_messages() los BORRA de verdad. Se ejecuta cuando alguien abre sus matches y, si la
+--     extensión pg_cron está activada (Database → Extensions), cada 10 minutos.
+--   * Si alguien REPORTA a otra persona, se guarda una copia de los mensajes de esa conversación de las
+--     últimas 24 h en report_message_snapshots, que solo ven los moderadores: sin eso la evidencia
+--     desaparecería sola.
+-- ------------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_messages_created ON public.messages(created_at);
+
+CREATE OR REPLACE FUNCTION public.purge_expired_messages()
+RETURNS INTEGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE removed INTEGER;
+BEGIN
+  DELETE FROM public.messages WHERE created_at < NOW() - INTERVAL '24 hours';
+  GET DIAGNOSTICS removed = ROW_COUNT;
+  RETURN removed;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.purge_expired_messages() FROM PUBLIC, anon, authenticated;
+
+CREATE TABLE IF NOT EXISTS public.report_message_snapshots (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    report_id UUID NOT NULL REFERENCES public.reports(id) ON DELETE CASCADE,
+    sender_id UUID,
+    content TEXT,
+    message_created_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_snapshots_report ON public.report_message_snapshots(report_id);
+ALTER TABLE public.report_message_snapshots ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Moderadores ven la evidencia de reportes" ON public.report_message_snapshots;
+CREATE POLICY "Moderadores ven la evidencia de reportes" ON public.report_message_snapshots FOR SELECT TO authenticated
+USING (public.is_moderator_or_admin());
+
+CREATE OR REPLACE FUNCTION public.snapshot_report_messages()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.report_message_snapshots (report_id, sender_id, content, message_created_at)
+  SELECT NEW.id, msg.sender_id, msg.content, msg.created_at
+  FROM public.matches m
+  JOIN public.conversations c ON c.match_id = m.id
+  JOIN public.messages msg ON msg.conversation_id = c.id
+  WHERE m.user_a = LEAST(NEW.reporter_id, NEW.reported_id)
+    AND m.user_b = GREATEST(NEW.reporter_id, NEW.reported_id)
+    AND msg.is_hidden = FALSE
+    AND msg.created_at > NOW() - INTERVAL '24 hours'
+  ORDER BY msg.created_at
+  LIMIT 200;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_report_snapshot ON public.reports;
+CREATE TRIGGER on_report_snapshot
+  AFTER INSERT ON public.reports
+  FOR EACH ROW EXECUTE FUNCTION public.snapshot_report_messages();
+
+-- Limpieza automática cada 10 minutos (solo si pg_cron está activado; si no, se limpia al abrir los matches)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    PERFORM cron.unschedule(jobid) FROM cron.job WHERE jobname = 'unilink-purge-messages';
+    PERFORM cron.schedule('unilink-purge-messages', '*/10 * * * *', 'SELECT public.purge_expired_messages()');
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'No se pudo programar la limpieza automática de mensajes: %', SQLERRM;
+END $$;
 REVOKE EXECUTE ON FUNCTION public.get_my_matches() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.unmatch(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.block_user(UUID) FROM anon;
