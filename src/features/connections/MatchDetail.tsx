@@ -372,9 +372,9 @@ export const MatchDetail: React.FC<{ connection: Connection; onBack: () => void 
   }
 
   return (
-    <div ref={topRef} className="space-y-4 pb-8 scroll-mt-4">
+    <div ref={topRef} className={view === 'main' && section === 'chat' ? 'flex-1 min-h-0 flex flex-col gap-3' : 'space-y-4 pb-8 scroll-mt-4'}>
       {/* Encabezado */}
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
           <button onClick={onBack} aria-label="Volver a la lista" className={iconBtn}><ArrowLeft className="w-5 h-5" /></button>
           <div className="rounded-full p-[2px] shrink-0" style={{ backgroundColor: MODE_COLOR[mode] }}>
@@ -408,7 +408,7 @@ export const MatchDetail: React.FC<{ connection: Connection; onBack: () => void 
       <NoticeBanner notice={notice} />
 
       {view === 'main' && (
-        <div className="grid grid-cols-2 p-1 rounded-full bg-haze-100 dark:bg-ink-850 shadow-soft-sm" role="tablist" aria-label="Encuentro o chat">
+        <div className="grid grid-cols-2 p-1 rounded-full bg-haze-100 dark:bg-ink-850 shadow-soft-sm shrink-0" role="tablist" aria-label="Encuentro o chat">
           {([['meetup', 'Encuentro', CalendarDays], ['chat', 'Chat', MessageCircle]] as const).map(([id, label, Icon]) => {
             const on = section === id;
             return (
