@@ -61,20 +61,20 @@ export const MatchChat: React.FC<{ connection: Connection }> = ({ connection }) 
   const messages = (list ?? []).filter((m) => new Date(m.createdAt).getTime() > cutoff);
 
   return (
-    <section className="space-y-3" aria-label={`Chat con ${first}`}>
-      <p className="flex items-start gap-2 text-xs text-slate-500 dark:text-haze-400 rounded-2xl bg-haze-100 dark:bg-ink-850 px-3 py-2.5">
+    <section className="flex-1 min-h-0 flex flex-col gap-3" aria-label={`Chat con ${first}`}>
+      <p className="shrink-0 flex items-start gap-2 text-xs text-slate-500 dark:text-haze-400 rounded-2xl bg-haze-100 dark:bg-ink-850 px-3 py-2.5">
         <Timer className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-        <span>Chat temporal: cada mensaje se borra {CHAT_TTL_HOURS} horas después de enviarse. Si reportas a {first}, moderación puede ver los mensajes de las últimas {CHAT_TTL_HOURS} h.</span>
+        <span>Los mensajes se borran a las {CHAT_TTL_HOURS} h. Si reportas a {first}, moderación puede verlos.</span>
       </p>
 
-      <ul className="space-y-2 min-h-40 max-h-[52dvh] overflow-y-auto pr-1" aria-live="polite">
+      <ul className="flex-1 min-h-0 overflow-y-auto overscroll-contain space-y-2 pr-1" aria-live="polite">
         {messages.length === 0 && (
           <li className="text-center text-sm text-slate-500 dark:text-haze-400 py-10">Aún no hay mensajes. ¡Rompe el hielo con {first}!</li>
         )}
         {messages.map((m) => {
           const mine = m.senderId === user?.id;
           return (
-            <li key={m.id} className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${mine ? 'ml-auto bg-brand-600 text-white' : 'mr-auto bg-white dark:bg-ink-850 shadow-soft-sm'}`}>
+            <li key={m.id} className={`w-fit max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${mine ? 'ml-auto bg-brand-600 text-white' : 'mr-auto bg-white dark:bg-ink-850 shadow-soft-sm'}`}>
               <p className="whitespace-pre-wrap break-words leading-snug">{m.content}</p>
               <p className={`text-[10px] mt-1 ${mine ? 'text-white/75' : 'text-slate-400'}`}>{hhmm(m.createdAt)} · se borra en {remaining(m.createdAt)}</p>
             </li>
@@ -83,7 +83,7 @@ export const MatchChat: React.FC<{ connection: Connection }> = ({ connection }) 
         <div ref={endRef} />
       </ul>
 
-      <form onSubmit={(e) => void submit(e)} className="flex items-end gap-2">
+      <form onSubmit={(e) => void submit(e)} className="shrink-0 flex items-end gap-2">
         <textarea
           rows={1}
           value={text}
@@ -98,7 +98,7 @@ export const MatchChat: React.FC<{ connection: Connection }> = ({ connection }) 
           {sending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
         </button>
       </form>
-      {error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-400">{error}</p>}
+      {error && <p role="alert" className="shrink-0 text-sm text-rose-700 dark:text-rose-400">{error}</p>}
     </section>
   );
 };
