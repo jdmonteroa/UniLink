@@ -58,6 +58,19 @@ export interface Connection {
   unreadCount: number;
 }
 
+/** Alguien a quien ya le mostraste interés y todavía no hay match. */
+export interface SentInterest {
+  id: string;
+  mode: ConnectionModeKey;
+  name: string;
+  career: string;
+  campus: string;
+  semester: number | null;
+  avatarUrl: string;
+  verified: boolean;
+  likedAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   senderId: string;
@@ -135,6 +148,18 @@ interface ConnectionRow {
   unread_count: number | null;
 }
 
+interface SentInterestRow {
+  profile_id: string;
+  mode: string;
+  liked_at: string;
+  full_name: string;
+  career_name: string | null;
+  campus_name: string | null;
+  semester: number | null;
+  photo: string | null;
+  is_photo_verified: boolean;
+}
+
 interface MessageRow {
   id: string;
   sender_id: string;
@@ -194,6 +219,18 @@ const mapConnection = (r: ConnectionRow): Connection => ({
   unreadCount: r.unread_count || 0,
 });
 
+const mapInterest = (r: SentInterestRow): SentInterest => ({
+  id: r.profile_id,
+  mode: r.mode === 'dating' ? 'dating' : 'friendship',
+  name: r.full_name,
+  career: r.career_name || '',
+  campus: r.campus_name || '',
+  semester: r.semester,
+  avatarUrl: photoUrl(r.photo),
+  verified: r.is_photo_verified,
+  likedAt: r.liked_at,
+});
+
 const mapMessage = (r: MessageRow): ChatMessage => ({ id: r.id, senderId: r.sender_id, content: r.content, createdAt: r.created_at });
 const isFresh = (iso: string) => Date.now() - new Date(iso).getTime() < CHAT_TTL_HOURS * 3_600_000;
 
@@ -218,6 +255,7 @@ interface DemoDb {
   connections: Connection[];
   history: Record<string, HistoryItem[]>;
   messages: Record<string, ChatMessage[]>;
+  interests: SentInterest[];
 }
 let demoDb: DemoDb | null = null;
 
@@ -246,7 +284,14 @@ function getDemoDb(): DemoDb {
     note: 'Repasamos Estructura de Datos antes del parcial?', responseNote: '', updatedAt: inHours(-5),
   };
   const ago = (h: number) => inHours(-h);
+  const interest = (id: string, name: string, career: string, campus: string, semester: number, photo: string): SentInterest => ({
+    id, mode: 'friendship', name, career, campus, semester, avatarUrl: photo, verified: true, likedAt: ago(5),
+  });
   demoDb = {
+    interests: [
+      interest('demo-leo', 'Leonardo Campos', 'Ingeniería en Sistemas Computacionales', 'Campus Sur', 9, 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=300&q=80'),
+      interest('demo-ximena', 'Ximena Reyes', 'Médico Cirujano', 'Campus Central', 3, 'https://images.unsplash.com/photo-1531123897727-8f129e1688ce?auto=format&fit=crop&w=300&q=80'),
+    ],
     messages: {
       'demo-m1': [
         { id: 'dm-1', senderId: 'demo-sofia', content: '¡Hola! Vi que también vas al cineclub 🎬', createdAt: ago(3) },
@@ -288,6 +333,11 @@ interface ConnectionsState {
   propose: (matchId: string, input: MeetupInput) => Promise<ActionResult>;
   respond: (meetupId: string, action: 'accept' | 'decline' | 'reschedule', input?: Partial<MeetupInput>) => Promise<ActionResult>;
   cancel: (meetupId: string, note?: string) => Promise<ActionResult>;
+  /** Personas a las que ya les mostraste interés (todavía sin match). */
+  sentInterests: SentInterest[];
+  loadSentInterests: () => Promise<void>;
+  addDemoInterest: (item: SentInterest) => void;
+  withdrawInterest: (item: SentInterest) => Promise<ActionResult>;
   unmatch: (matchId: string) => Promise<ActionResult>;
   block: (connection: Connection) => Promise<ActionResult>;
   report: (connection: Connection, reason: ReportReason, description: string) => Promise<ActionResult>;
@@ -335,6 +385,7 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => {
 
   return {
     connections: [],
+    sentInterests: [],
     messages: {},
     ownerId: null,
     isLoading: false,
@@ -346,7 +397,7 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => {
     reset: () => {
       stopRealtime();
       demoDb = null;
-      set({ connections: [], messages: {}, ownerId: null, isLoading: false, error: null, openMatchId: null });
+      set({ connections: [], sentInterests: [], messages: {}, ownerId: null, isLoading: false, error: null, openMatchId: null });
     },
 
     loadConnections: async () => {
@@ -364,6 +415,7 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => {
         return;
       }
       set({ connections: ((data || []) as ConnectionRow[]).map(mapConnection), isLoading: false, error: null });
+      void get().loadSentInterests();
 
       // En vivo: cuando cambia un encuentro mío, se vuelve a cargar (el punto rojo aparece solo)
       if (!channel) {
@@ -549,6 +601,34 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => {
       const { error } = await supabase.rpc('cancel_meetup', { p_meetup: meetupId, p_note: note?.trim() || null });
       if (error) return fail(error, 'No se pudo cancelar.');
       await get().loadConnections();
+      return { success: true };
+    },
+
+    loadSentInterests: async () => {
+      if (!auth().user) return;
+      if (auth().isDemo) {
+        set({ sentInterests: getDemoDb().interests });
+        return;
+      }
+      const { data, error } = await supabase.rpc('get_my_sent_interests');
+      if (!error) set({ sentInterests: ((data || []) as SentInterestRow[]).map(mapInterest) });
+    },
+
+    addDemoInterest: (item) => {
+      const db = getDemoDb();
+      if (!db.interests.some((i) => i.id === item.id && i.mode === item.mode)) db.interests = [item, ...db.interests];
+      set({ sentInterests: db.interests });
+    },
+
+    withdrawInterest: async (item) => {
+      if (auth().isDemo) {
+        const db = getDemoDb();
+        db.interests = db.interests.filter((i) => !(i.id === item.id && i.mode === item.mode));
+      } else {
+        const { error } = await supabase.rpc('withdraw_interest', { p_to: item.id, p_mode: item.mode });
+        if (error) return fail(error, 'No se pudo retirar tu interés.');
+      }
+      set({ sentInterests: get().sentInterests.filter((i) => !(i.id === item.id && i.mode === item.mode)) });
       return { success: true };
     },
 

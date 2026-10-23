@@ -1304,9 +1304,8 @@ BEGIN
     q := '%' || replace(replace(replace(lower(left(q, 60)), '\', '\\'), '%', '\%'), '_', '\_') || '%';
   END IF;
 
-  -- En Amistades SIEMPRE hay gente: se muestran todas las personas compatibles (también las que ya
-  -- evaluaste), con su estado (my_action = 'like' si ya les mostraste interés; is_matched si ya conectaron),
-  -- y las conectadas van al final.
+  -- En Amistades SIEMPRE hay gente: solo se excluyen las personas con las que ya hiciste match (aparecen en
+  -- Matches) y las bloqueadas. Las que ya tienen tu interés siguen saliendo (my_action = 'like') al final.
   RETURN QUERY
   SELECT r.profile_id, r.full_name, r.age, r.career_name, r.campus_name, r.semester,
          r.bio, r.is_photo_verified, r.photos, r.compatibility_score,
@@ -1314,7 +1313,8 @@ BEGIN
          r.my_action, r.is_matched
   FROM public.recommendations_core(p_mode, 1000, TRUE) r
   JOIN public.profiles p ON p.id = r.profile_id
-  WHERE (p_career IS NULL OR p.career_id = p_career)
+  WHERE NOT r.is_matched -- con quien ya hiciste match no aparece aquí: está en Matches
+    AND (p_career IS NULL OR p.career_id = p_career)
     AND (p_campus IS NULL OR p.campus_id = p_campus)
     AND (p_semester IS NULL OR p.semester = p_semester)
     AND (p_subject IS NULL OR EXISTS (
@@ -1372,6 +1372,63 @@ GRANT EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, 
 GRANT EXECUTE ON FUNCTION public.record_swipe(UUID, TEXT, TEXT) TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.record_swipe(UUID, TEXT, TEXT) FROM anon;
+
+-- Personas a las que ya les mostraste interés y todavía no hay match (se ven en Matches → "Interés enviado")
+DROP FUNCTION IF EXISTS public.get_my_sent_interests();
+CREATE FUNCTION public.get_my_sent_interests()
+RETURNS TABLE (
+  profile_id UUID, mode TEXT, liked_at TIMESTAMPTZ, full_name TEXT, career_name TEXT, campus_name TEXT,
+  semester INTEGER, photo TEXT, is_photo_verified BOOLEAN
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE me UUID := auth.uid();
+BEGIN
+  IF me IS NULL THEN RETURN; END IF;
+  RETURN QUERY
+  SELECT o.id, s.mode, s.created_at, o.full_name, car.name, cam.name, o.semester,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = o.id ORDER BY ph.position LIMIT 1),
+         o.is_photo_verified
+  FROM public.swipes s
+  JOIN public.profiles o ON o.id = s.to_id
+  LEFT JOIN public.careers car ON car.id = o.career_id
+  LEFT JOIN public.campuses cam ON cam.id = o.campus_id
+  WHERE s.from_id = me AND s.action = 'like'
+    AND s.mode IN ('friendship', 'dating')
+    AND NOT EXISTS (
+      SELECT 1 FROM public.matches m
+      WHERE m.user_a = LEAST(me, o.id) AND m.user_b = GREATEST(me, o.id) AND m.mode = s.mode AND m.is_active = TRUE
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM public.blocks b
+      WHERE (b.blocker_id = me AND b.blocked_id = o.id) OR (b.blocker_id = o.id AND b.blocked_id = me)
+    )
+  ORDER BY s.created_at DESC
+  LIMIT 200;
+END;
+$$;
+
+-- Retira un interés que todavía no es match (la persona vuelve a aparecer sin marca)
+DROP FUNCTION IF EXISTS public.withdraw_interest(UUID, TEXT);
+CREATE FUNCTION public.withdraw_interest(p_to UUID, p_mode TEXT)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE me UUID := auth.uid();
+BEGIN
+  IF me IS NULL THEN RAISE EXCEPTION 'Operación no válida.'; END IF;
+  DELETE FROM public.swipes s
+  WHERE s.from_id = me AND s.to_id = p_to AND s.mode = p_mode AND s.action = 'like'
+    AND NOT EXISTS (
+      SELECT 1 FROM public.matches m
+      WHERE m.user_a = LEAST(me, p_to) AND m.user_b = GREATEST(me, p_to) AND m.mode = p_mode AND m.is_active = TRUE
+    );
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.get_my_sent_interests() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.withdraw_interest(UUID, TEXT) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.get_my_sent_interests() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.withdraw_interest(UUID, TEXT) FROM anon;
 
 -- ------------------------------------------------------------------------------
 -- 2.15 ENCUENTROS (reemplazan al chat entre matches)

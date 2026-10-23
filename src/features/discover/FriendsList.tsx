@@ -243,6 +243,8 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
   const { user, isDemo } = useAuthStore();
   const connections = useConnectionsStore((s) => s.connections);
   const loadConnections = useConnectionsStore((s) => s.loadConnections);
+  const loadSentInterests = useConnectionsStore((s) => s.loadSentInterests);
+  const addDemoInterest = useConnectionsStore((s) => s.addDemoInterest);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [showFilters, setShowFilters] = useState(false);
@@ -353,6 +355,8 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
   // En Amistades nadie desaparece de la lista: "Me interesa" solo cambia su estado
   const markLiked = (id: string, matched: boolean) =>
     setFriends((prev) => {
+      // Con quien ya hiciste match deja de salir aquí: pasa a Matches
+      if (matched) return prev.filter((f) => f.id !== id);
       const next = prev.map((f) => (f.id === id ? { ...f, liked: true, matched } : f));
       // Las personas ya conectadas pasan al final, igual que lo ordena el servidor
       return [...next.filter((f) => !f.liked && !f.matched), ...next.filter((f) => f.liked || f.matched)];
@@ -366,6 +370,9 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
     if (isDemo) {
       const matched = friend.compatibility >= 70;
       markLiked(friend.id, matched);
+      if (!matched) {
+        addDemoInterest({ id: friend.id, mode: 'friendship', name: friend.name, career: friend.career, campus: friend.campus, semester: friend.semester ?? null, avatarUrl: friend.photo, verified: friend.verified, likedAt: new Date().toISOString() });
+      }
       onNotice(matched ? `¡Ahora tú y ${first} son match! Ya pueden escribirse en Matches.` : `Le avisamos a ${first} que te interesa. Si es mutuo, aparecerá en Matches.`);
       setBusyId(null);
       return;
@@ -383,6 +390,7 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
       onNotice(`¡Ahora tú y ${first} son match! Ya pueden escribirse en Matches.`);
       void loadConnections();
     } else {
+      void loadSentInterests();
       onNotice(`Le avisamos a ${first} que te interesa. Si es mutuo, aparecerá en Matches.`);
     }
     setBusyId(null);
