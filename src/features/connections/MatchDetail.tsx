@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ArrowLeft, Instagram, MoreVertical, HeartCrack, UserX, Flag, Loader2, MapPin, CalendarDays, Check, X, RefreshCw, Clock, CalendarCheck, Send, Quote,
+  ArrowLeft, Instagram, MoreVertical, HeartCrack, UserX, Flag, Loader2, MapPin, CalendarDays, Check, X, RefreshCw, Clock, CalendarCheck, Send, Quote, MessageCircle,
 } from 'lucide-react';
 import { useAuthStore, formatSemester } from '@/features/auth/authStore';
 import {
@@ -13,8 +13,9 @@ import {
   type HistoryItem,
   type MeetupInput,
   type MeetupStatus,
+  type ReportReason,
 } from '@/features/connections/connectionsStore';
-import type { ReportReason } from '@/features/chat/chatStore';
+import { MatchChat } from '@/features/connections/MatchChat';
 import { Avatar } from '@/components/Avatar';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { MODE_COLOR } from '@/components/brand';
@@ -149,6 +150,7 @@ export const MatchDetail: React.FC<{ connection: Connection; onBack: () => void 
   const [busy, setBusy] = useState<string | null>(null);
   const [view, setView] = useState<'main' | 'propose' | 'reschedule' | 'decline'>('main');
   const [declineNote, setDeclineNote] = useState('');
+  const [section, setSection] = useState<'meetup' | 'chat'>(connection.unreadCount > 0 ? 'chat' : 'meetup');
   const [showOptions, setShowOptions] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [reportReason, setReportReason] = useState<ReportReason>('harassment');
@@ -405,10 +407,26 @@ export const MatchDetail: React.FC<{ connection: Connection; onBack: () => void 
 
       <NoticeBanner notice={notice} />
 
-      {main}
+      {view === 'main' && (
+        <div className="grid grid-cols-2 p-1 rounded-full bg-haze-100 dark:bg-ink-850 shadow-soft-sm" role="tablist" aria-label="Encuentro o chat">
+          {([['meetup', 'Encuentro', CalendarDays], ['chat', 'Chat', MessageCircle]] as const).map(([id, label, Icon]) => {
+            const on = section === id;
+            return (
+              <button key={id} role="tab" aria-selected={on} onClick={() => setSection(id)}
+                className={`h-10 rounded-full text-sm font-semibold flex items-center justify-center gap-1.5 transition-colors ${on ? 'text-slate-900 shadow-sticker' : 'text-slate-500 dark:text-haze-400'}`}
+                style={on ? { backgroundColor: MODE_COLOR[mode] } : undefined}>
+                <Icon className="w-4 h-4" /> {label}
+                {id === 'chat' && connection.unreadCount > 0 && !on && <span className="w-2 h-2 rounded-full bg-brand-600" aria-label="Mensajes sin leer" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {view === 'main' && section === 'chat' ? <MatchChat connection={connection} /> : main}
 
       {/* Quién es */}
-      {view === 'main' && (
+      {view === 'main' && section === 'meetup' && (
         <section className={card} aria-label={`Sobre ${first}`}>
           <h3 className="text-lg font-semibold">Sobre {first}</h3>
           {other.bio && <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{other.bio}</p>}
@@ -422,7 +440,7 @@ export const MatchDetail: React.FC<{ connection: Connection; onBack: () => void 
       )}
 
       {/* Historial de propuestas y mensajes */}
-      {view === 'main' && history.length > 0 && (
+      {view === 'main' && section === 'meetup' && history.length > 0 && (
         <section className="space-y-3" aria-label="Historial de propuestas">
           <h3 className="font-sans text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-haze-400">Historial</h3>
           <ul className="space-y-2.5">
