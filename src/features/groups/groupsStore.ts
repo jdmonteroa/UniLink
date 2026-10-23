@@ -407,7 +407,7 @@ function getDemoDb(): DemoDb {
   });
   const groups = [
     mk(0, 'Estructura de Datos · Estudio', 'Repasamos ejercicios y nos preparamos para exámenes. Todos los niveles.', 'estudio', 14),
-    mk(1, 'Rodada en bici UAA', 'Salidas los sábados por la mañana. Traer casco y agua.', 'deporte', 9),
+    mk(1, 'Rodada en bici', 'Salidas los sábados por la mañana. Traer casco y agua.', 'deporte', 9),
     mk(2, 'Cineclub de los jueves', 'Vemos una película y la comentamos. Abierto a todas las carreras.', 'arte', 22),
     // Un grupo que la persona de la demo administra (para probar "Pedir cambios") y dos enviados en revisión
     { ...mk(3, 'Club de ajedrez', 'Partidas y torneos relámpago en la cafetería.', 'social', 2), createdBy: 'demo-user', creatorName: 'Carlos Mendoza', myRole: 'admin' as const },

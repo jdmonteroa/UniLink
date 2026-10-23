@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { User as AuthUser } from '@supabase/supabase-js';
+import { passwordProblem } from '@/lib/password';
 import { supabase, isSupabaseConfigured, friendlyError } from '@/lib/supabaseClient';
 import { photoUrl, saveProfilePhotos, MAX_PHOTOS } from '@/lib/photos';
 
@@ -352,16 +353,16 @@ let initStarted = false;
 const demoUser = (): UserProfile => ({
   id: 'demo-user',
   name: 'Carlos Mendoza',
-  email: 'carlos.mendoza@edu.uaa.mx',
+  email: 'carlos.mendoza@tu-universidad.edu',
   birthDate: '2003-08-14',
   age: calculateAge('2003-08-14'),
   gender: 'male',
   pronouns: 'Él',
   bio: 'Estudiante de ISC en Campus Central. Busco equipo para proyectos y alguien con quien platicar de música indie.',
-  instagramHandle: 'carlos_mendoza.uaa',
-  university: 'Universidad Autónoma de Aguascalientes',
+  instagramHandle: 'carlos_mendoza',
+  university: 'Tu universidad',
   campusId: 'central',
-  campus: 'Campus Central UAA',
+  campus: 'Campus Central',
   careerId: 'isc',
   career: 'Ingeniería en Sistemas Computacionales',
   semester: 6,
@@ -499,9 +500,8 @@ export const useAuthStore = create<AuthState>((set, get) => {
         return fail(`Solo se permiten correos institucionales (@${ALLOWED_DOMAINS.join(' o @')}).`);
       }
       if (fullName.trim().length < 3) return fail('Escribe tu nombre completo.');
-      if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
-        return fail('La contraseña debe tener al menos 8 caracteres, con letras y números.');
-      }
+      const passwordIssue = passwordProblem(password);
+      if (passwordIssue) return fail(passwordIssue);
 
       try {
         const { data, error } = await supabase.auth.signUp({

@@ -91,6 +91,25 @@ Al final de `setup.sql` hay una sección **opcional y desactivada** que crea 10 
 
 ---
 
+## Recuperar contraseña
+En el login, bajo el campo de contraseña, está **"¿Olvidaste tu contraseña?"**. La persona escribe su correo institucional y le llega un enlace; al abrirlo entra a `/restablecer`, escribe la contraseña nueva (mismas reglas que el registro: 8+ caracteres con letras y números) y queda dentro de la app. Al guardar se cierran sus sesiones en otros dispositivos.
+
+- El mensaje al pedir el enlace es **siempre el mismo**, exista o no la cuenta, para no revelar quién está registrado. Hay un enfriamiento de 60 s para reenviar, y Supabase también limita los envíos.
+- Si el enlace venció o ya se usó, `/restablecer` lo explica y lleva a `/?recuperar=1` para pedir uno nuevo.
+- Código: `src/features/auth/passwordReset.ts` (lógica), `ResetPasswordPage.tsx` (la página) y `LoginPage.tsx` (la pantalla de solicitud). Es **solo del lado de la app y de la configuración de Supabase: no hay cambios de SQL**.
+
+**Lo que hay que configurar a mano en el panel de Supabase** (sin esto el correo no llega o el enlace no regresa a la app):
+1. **Authentication → URL Configuration**
+   - *Site URL*: `https://unilinksystem.vercel.app`
+   - *Redirect URLs*: agrega `https://unilinksystem.vercel.app/restablecer` (y `http://localhost:5173/restablecer` si pruebas en local). Si la dirección no está en la lista, Supabase ignora el destino y manda a la *Site URL*.
+2. **Authentication → Emails → Templates → Reset Password**: pega el contenido de `supabase/email-templates/restablecer-contrasena.html` y pon el asunto, por ejemplo "Restablece tu contraseña de UniLink".
+3. **Authentication → SMTP Settings**: configura un **SMTP propio**. El remitente de prueba de Supabase tiene un límite muy bajo de correos por hora y solo está pensado para correos del equipo del proyecto, así que con estudiantes reales los correos de recuperación (y los de confirmar registro) no llegarían o se limitarían. Verifica los límites vigentes en la documentación de Supabase.
+4. **Authentication → Sign In / Providers → Email**: pon la longitud mínima de contraseña en **8**, para que coincida con la regla de la app.
+5. **Authentication → Rate Limits**: ajusta los correos por hora una vez que tengas SMTP propio.
+6. **Revisa `VITE_APP_URL` en Vercel**: es la base del enlace de regreso (también la usa el correo de confirmar registro). Debe ser `https://unilinksystem.vercel.app` o **no estar definida** (entonces se usa la dirección desde la que se abre la app). Si ahí quedó el valor de `.env.example` (`http://localhost:5173`), los enlaces del correo apuntarían a `localhost` y no funcionarían para nadie más.
+
+Las cuentas de administración creadas con `seed-admins.sql` usan correos que probablemente no existen como buzón, así que **no pueden recuperar la contraseña por correo**: la cambian desde *Mi perfil → Cambiar contraseña*.
+
 ## Cómo funciona
 
 La app no tiene un servidor propio: el frontend habla directo con Supabase usando solo la clave pública (`anon key`). La seguridad vive en las políticas RLS de cada tabla.

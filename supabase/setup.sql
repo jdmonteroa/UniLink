@@ -585,7 +585,7 @@ BEGIN
   WHERE domain = lower(split_part(NEW.email, '@', 2));
 
   IF matched_university_id IS NULL THEN
-    RAISE EXCEPTION 'El correo institucional (%) no pertenece a una universidad registrada. Usa tu correo oficial (ej. @edu.uaa.mx).', NEW.email;
+    RAISE EXCEPTION 'El correo institucional (%) no pertenece a una universidad registrada. Usa tu correo institucional.', NEW.email;
   END IF;
 
   INSERT INTO public.profiles (id, full_name, university_id, role, onboarding_completed)
@@ -3288,11 +3288,15 @@ BEGIN
         (uni_uaa_id, 'alumnos.uaa.mx')
     ON CONFLICT (domain) DO NOTHING;
 
+    -- Los campus ya no llevan "UAA" en el nombre: si la base ya tenía los viejos, se renombran
+    -- (mismo id) antes de insertar, para no duplicarlos.
+    UPDATE public.campuses SET name = regexp_replace(name, ' UAA$', '') WHERE name LIKE '% UAA';
+
     -- 3. CAMPUS
     INSERT INTO public.campuses (id, university_id, name)
     VALUES 
-        (campus_central, uni_uaa_id, 'Campus Central UAA'),
-        (campus_sur, uni_uaa_id, 'Campus Sur UAA')
+        (campus_central, uni_uaa_id, 'Campus Central'),
+        (campus_sur, uni_uaa_id, 'Campus Sur')
     ON CONFLICT (university_id, name) DO NOTHING;
 
     -- 4. CARRERAS

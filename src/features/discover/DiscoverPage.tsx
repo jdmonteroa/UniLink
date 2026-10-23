@@ -78,7 +78,7 @@ const MODE_LABEL: Record<ConnectionMode, string> = { friendship: 'Amistades', da
 // Perfiles de ejemplo solo para el modo demo
 const DEMO_PROFILES: DiscoverStudent[] = [
   {
-    id: 'demo-valeria', name: 'Valeria Lozano', age: 20, career: 'Lic. en Diseño Gráfico', campus: 'Campus Central UAA', semester: 4,
+    id: 'demo-valeria', name: 'Valeria Lozano', age: 20, career: 'Lic. en Diseño Gráfico', campus: 'Campus Central', semester: 4,
     compatibility: 82, reasons: ['Libres: Miércoles 13:00–15:00', 'A ambos les gusta: Café de Especialidad, Música Indie', 'Mismo campus'],
     sharedSubjects: [], scheduleOverlap: 'Miércoles 13:00–15:00',
     bio: 'Siempre con cámara analógica en mano. Me gusta descubrir cafeterías e ir a exposiciones.',
@@ -87,7 +87,7 @@ const DEMO_PROFILES: DiscoverStudent[] = [
     verified: true,
   },
   {
-    id: 'demo-diego', name: 'Diego Martínez', age: 22, career: 'Ing. en Sistemas Computacionales', campus: 'Campus Sur UAA', semester: 7,
+    id: 'demo-diego', name: 'Diego Martínez', age: 22, career: 'Ing. en Sistemas Computacionales', campus: 'Campus Sur', semester: 7,
     compatibility: 76, reasons: ['Comparten 1 materia', 'Misma carrera', 'A ambos les gusta: Programación, Videojuegos'],
     sharedSubjects: ['Inteligencia Artificial'],
     bio: 'Proyectos en Campus Sur. Retas de Smash entre clases y buscando equipo para hackathones.',
@@ -96,7 +96,7 @@ const DEMO_PROFILES: DiscoverStudent[] = [
     verified: true,
   },
   {
-    id: 'demo-mateo', name: 'Mateo Espinoza', age: 22, career: 'Médico Cirujano', campus: 'Campus Central UAA', semester: 8,
+    id: 'demo-mateo', name: 'Mateo Espinoza', age: 22, career: 'Médico Cirujano', campus: 'Campus Central', semester: 8,
     compatibility: 41, reasons: ['Mismo campus'], sharedSubjects: [],
     bio: 'Estudiante de Medicina. Busco despejar la mente después de guardias. Senderismo y pláticas largas.',
     tags: ['Senderismo', 'Running', 'Podcasts'],

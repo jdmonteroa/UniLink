@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { useAuthStore, isAllowedInstitutionalEmail } from '@/features/auth/authStore';
+import { useAuthStore, isAllowedInstitutionalEmail, ALLOWED_DOMAINS } from '@/features/auth/authStore';
 import { isSupabaseConfigured } from '@/lib/supabaseClient';
 import { useThemeStore } from '@/features/theme/themeStore';
 import {
@@ -9,19 +9,22 @@ import {
   MoonIcon,
   ArrowRightIcon,
   ShieldCheckIcon,
+  BookOpenIcon,
   UserGroupIcon,
-  HeartIcon,
 } from '@/components/icons';
-import { CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Loader2, UsersRound, ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Wordmark, Highlight, STICKER } from '@/components/brand';
+import { DownloadAppButton } from '@/components/DownloadAppButton';
+import { requestPasswordReset } from '@/features/auth/passwordReset';
+import { isRunningAsApp } from '@/lib/android';
 
 /*
   Login — "campus, pero ligero".
   Base de DESIGN.md (papel hueso / carbón, tinta / tiza, Crimson Academic) +
   una paleta de stickers para darle juventud: girasol, menta y coral.
   El carmesí sigue siendo el único color de ACCIÓN; los stickers solo decoran
-  y nombran los dos modos reales de la app (Amistades y Pareja).
+  el saludo (Estudio, Amistades y Comunidad).
 */
 
 const C = STICKER;
@@ -42,10 +45,11 @@ const fieldIdle =
   'border-[#1C1C1E]/10 dark:border-white/10 hover:border-[#1C1C1E]/25 dark:hover:border-white/20 focus:border-[#1C1C1E] dark:focus:border-[#F9F9FB] focus:bg-white dark:focus:bg-white/[0.07]';
 const labelCls = 'block mb-2 text-sm font-semibold';
 
-/* Stickers de los dos modos de conexión */
+/* Stickers que decoran el saludo */
 const stickers = [
-  { label: 'Amistades', Icon: UserGroupIcon, bg: C.sun, rotate: -4 },
-  { label: 'Pareja', Icon: HeartIcon, bg: C.coral, rotate: 3 },
+  { label: 'Estudio', Icon: BookOpenIcon, bg: C.mint, rotate: -6 },
+  { label: 'Amistades', Icon: UserGroupIcon, bg: C.sun, rotate: 4 },
+  { label: 'Comunidad', Icon: UsersRound, bg: C.coral, rotate: -3 },
 ];
 
 export const LoginPage: React.FC = () => {
@@ -61,6 +65,19 @@ export const LoginPage: React.FC = () => {
   const [name, setName] = useState('');
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
+  // "Olvidé mi contraseña": se abre también con /?recuperar=1 (desde un enlace vencido)
+  const [isForgot, setIsForgot] = useState(
+    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('recuperar')
+  );
+  const [forgotError, setForgotError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [cooldown, setCooldown] = useState(0); // segundos antes de poder reenviar el correo
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
+
   // Verificación en tiempo real del dominio
   const isDomainValid = isAllowedInstitutionalEmail(email);
   const needsConfirmation = Boolean(error && error.toLowerCase().includes('confirmas tu correo'));
@@ -70,6 +87,24 @@ export const LoginPage: React.FC = () => {
     e.preventDefault();
     clearError();
     setSuccessNotice(null);
+
+    if (isForgot) {
+      setForgotError(null);
+      if (!isDomainValid) {
+        setForgotError(`Solo se permiten correos institucionales (@${ALLOWED_DOMAINS.join(' o @')}).`);
+        return;
+      }
+      setSending(true);
+      const res = await requestPasswordReset(email);
+      setSending(false);
+      if (res.success) {
+        setSuccessNotice(res.message || null);
+        setCooldown(60);
+      } else {
+        setForgotError(res.message || 'No se pudo enviar el correo.');
+      }
+      return;
+    }
 
     if (isRegister) {
       const res = await registerWithSupabase(email, password, name);
@@ -100,6 +135,23 @@ export const LoginPage: React.FC = () => {
     setSuccessNotice(null);
   };
 
+  const openForgot = () => {
+    setIsRegister(false);
+    setIsForgot(true);
+    clearError();
+    setSuccessNotice(null);
+    setForgotError(null);
+  };
+
+  const closeForgot = () => {
+    setIsForgot(false);
+    setSuccessNotice(null);
+    setForgotError(null);
+    setCooldown(0);
+  };
+
+  const shownError = isForgot ? forgotError : error;
+
   return (
     <div
       className={cn(
@@ -112,29 +164,35 @@ export const LoginPage: React.FC = () => {
       <header className="w-full max-w-6xl mx-auto px-5 sm:px-8 pt-5 sm:pt-7 flex items-center justify-between">
         <Wordmark className="text-[1.75rem]" />
 
-        <motion.button
-          type="button"
-          onClick={toggleDarkMode}
-          whileTap={{ scale: 0.9, rotate: -20 }}
-          className={cn(
-            'w-11 h-11 flex items-center justify-center rounded-full border-2 border-[#1C1C1E]/10 dark:border-white/10',
-            'hover:bg-[#FFC93C] hover:border-[#FFC93C] hover:text-[#1C1C1E] transition-colors duration-200',
-            focusRing
-          )}
-          aria-label={isDarkMode ? 'Cambiar a modo día' : 'Cambiar a modo noche'}
-        >
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.span
-              key={isDarkMode ? 'sun' : 'moon'}
-              initial={{ opacity: 0, rotate: -90, scale: 0.6 }}
-              animate={{ opacity: 1, rotate: 0, scale: 1 }}
-              exit={{ opacity: 0, rotate: 90, scale: 0.6 }}
-              transition={{ duration: 0.25 }}
-            >
-              {isDarkMode ? <SunIcon className="w-4.5 h-4.5" /> : <MoonIcon className="w-4.5 h-4.5" />}
-            </motion.span>
-          </AnimatePresence>
-        </motion.button>
+        {/* Sin sesión: el botón de descarga ocupa el lugar del icono de tema.
+            Si ya se usa la app instalada (el botón se oculta), se conserva el icono de tema. */}
+        {isRunningAsApp() ? (
+          <motion.button
+            type="button"
+            onClick={toggleDarkMode}
+            whileTap={{ scale: 0.9, rotate: -20 }}
+            className={cn(
+              'w-11 h-11 flex items-center justify-center rounded-full border-2 border-[#1C1C1E]/10 dark:border-white/10',
+              'hover:bg-[#FFC93C] hover:border-[#FFC93C] hover:text-[#1C1C1E] transition-colors duration-200',
+              focusRing
+            )}
+            aria-label={isDarkMode ? 'Cambiar a modo día' : 'Cambiar a modo noche'}
+          >
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.span
+                key={isDarkMode ? 'sun' : 'moon'}
+                initial={{ opacity: 0, rotate: -90, scale: 0.6 }}
+                animate={{ opacity: 1, rotate: 0, scale: 1 }}
+                exit={{ opacity: 0, rotate: 90, scale: 0.6 }}
+                transition={{ duration: 0.25 }}
+              >
+                {isDarkMode ? <SunIcon className="w-4.5 h-4.5" /> : <MoonIcon className="w-4.5 h-4.5" />}
+              </motion.span>
+            </AnimatePresence>
+          </motion.button>
+        ) : (
+          <DownloadAppButton />
+        )}
       </header>
 
       <main className="flex-1 w-full max-w-6xl mx-auto px-5 sm:px-8 pt-8 pb-12 sm:pt-12 lg:pt-16 grid lg:grid-cols-12 gap-10 lg:gap-14 lg:items-center">
@@ -159,7 +217,7 @@ export const LoginPage: React.FC = () => {
 
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={isRegister ? 'register' : 'login'}
+              key={isForgot ? 'forgot' : isRegister ? 'register' : 'login'}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
@@ -171,13 +229,15 @@ export const LoginPage: React.FC = () => {
                   softSerif
                 )}
               >
-                {isRegister ? 'Tu gente ya está ' : 'Qué bueno verte '}
-                <Highlight>{isRegister ? 'en el campus' : 'otra vez'}</Highlight>
+                {isForgot ? 'Recupera tu ' : isRegister ? 'Tu gente ya está ' : 'Qué bueno verte '}
+                <Highlight>{isForgot ? 'acceso' : isRegister ? 'en el campus' : 'otra vez'}</Highlight>
               </h1>
               <p className={cn('mt-6 max-w-[38ch] text-base sm:text-lg leading-relaxed', muted)}>
-                {isRegister
-                  ? 'Conecta con la comunidad de Campus Central y Campus Sur.'
-                  : 'Ingresa con tu correo institucional @edu.uaa.mx y sigue donde te quedaste.'}
+                {isForgot
+                  ? 'Escribe tu correo institucional y te enviamos un enlace para crear una contraseña nueva.'
+                  : isRegister
+                    ? 'Conecta con estudiantes de tu universidad.'
+                    : 'Ingresa con tu correo institucional y sigue donde te quedaste.'}
               </p>
             </motion.div>
           </AnimatePresence>
@@ -185,7 +245,17 @@ export const LoginPage: React.FC = () => {
 
         {/* Formulario */}
         <section className="lg:col-span-5 lg:col-start-8 w-full max-w-md lg:max-w-none">
-          {/* Iniciar sesión / Crear cuenta */}
+          {isForgot ? (
+            <button
+              type="button"
+              onClick={closeForgot}
+              className={cn('inline-flex items-center gap-1.5 text-sm font-semibold', muted, 'hover:text-[#1C1C1E] dark:hover:text-[#F9F9FB] transition-colors', focusRing)}
+            >
+              <ArrowLeft className="w-4 h-4" /> Volver a iniciar sesión
+            </button>
+          ) : (
+            <>
+              {/* Iniciar sesión / Crear cuenta */}
           <div
             role="tablist"
             aria-label="Tipo de acceso"
@@ -220,17 +290,19 @@ export const LoginPage: React.FC = () => {
               </button>
             ))}
           </div>
+            </>
+          )}
 
           {/* Avisos */}
           <div className="mt-5 space-y-3 empty:hidden">
-            {error && (
+            {shownError && (
               <div
                 role="alert"
                 className="p-3.5 rounded-lg bg-rose-100 dark:bg-rose-950/50 text-rose-900 dark:text-rose-200 text-sm flex items-start gap-2"
               >
                 <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                <span>{error}</span>
-                {needsConfirmation && (
+                <span>{shownError}</span>
+                {needsConfirmation && !isForgot && (
                   <button
                     type="button"
                     onClick={handleResend}
@@ -338,7 +410,7 @@ export const LoginPage: React.FC = () => {
                 <p id="login-email-hint" className="mt-2 text-sm flex items-center gap-1.5">
                   {isDomainValid ? (
                     <span className="text-emerald-700 dark:text-emerald-400 font-medium">
-                      Correo institucional válido. ¡Eres de la UAA!
+                      Correo institucional válido.
                     </span>
                   ) : (
                     <span className="text-rose-700 dark:text-rose-400 flex items-center gap-1.5">
@@ -350,6 +422,7 @@ export const LoginPage: React.FC = () => {
               )}
             </div>
 
+            {!isForgot && (
             <div>
               <label htmlFor="login-password" className={labelCls}>
                 Contraseña
@@ -365,12 +438,24 @@ export const LoginPage: React.FC = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 className={cn(fieldCls, fieldIdle)}
               />
+              {!isRegister && (
+                <div className="mt-2 text-right">
+                  <button
+                    type="button"
+                    onClick={openForgot}
+                    className={cn('text-sm font-semibold underline underline-offset-4 hover:text-[#A30021] dark:hover:text-[#F0607A] transition-colors', focusRing)}
+                  >
+                    ¿Olvidaste tu contraseña?
+                  </button>
+                </div>
+              )}
             </div>
+            )}
 
             {/* Acción principal */}
             <motion.button
               type="submit"
-              disabled={isLoading || (email.length > 0 && !isDomainValid)}
+              disabled={isLoading || sending || (email.length > 0 && !isDomainValid) || (isForgot && (email.length === 0 || cooldown > 0))}
               whileHover={reduceMotion ? undefined : { y: -2 }}
               whileTap={{ scale: 0.97, y: 0 }}
               transition={spring}
@@ -382,14 +467,24 @@ export const LoginPage: React.FC = () => {
                 focusRing
               )}
             >
-              {isLoading ? (
+              {isLoading || sending ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Verificando...</span>
+                  <span>{isForgot ? 'Enviando...' : 'Verificando...'}</span>
                 </>
               ) : (
                 <>
-                  <span>{isRegister ? 'Crear mi cuenta' : 'Entrar'}</span>
+                  <span>
+                    {isForgot
+                      ? cooldown > 0
+                        ? `Reenviar en ${cooldown} s`
+                        : successNotice
+                          ? 'Reenviar enlace'
+                          : 'Enviar enlace'
+                      : isRegister
+                        ? 'Crear mi cuenta'
+                        : 'Entrar'}
+                  </span>
                   <ArrowRightIcon className="w-4.5 h-4.5 transition-transform duration-200 group-hover:translate-x-1" />
                 </>
               )}
@@ -398,15 +493,13 @@ export const LoginPage: React.FC = () => {
 
           <p className={cn('mt-6 flex items-center justify-center gap-2 text-sm text-center', muted)}>
             <ShieldCheckIcon className="w-4 h-4 shrink-0" />
-            <span>Solo alumnos de la UAA pueden entrar</span>
+            <span>Solo estudiantes con correo institucional pueden entrar</span>
           </p>
         </section>
       </main>
 
       <footer className={cn('w-full max-w-6xl mx-auto px-5 sm:px-8 pb-6 text-xs', muted)}>
-        UniLink UAA © 2026 • Universidad Autónoma de Aguascalientes
-        <span aria-hidden> • </span>
-        <Link to="/descargar" className="font-semibold underline underline-offset-2 hover:text-[#A30021] dark:hover:text-[#F0607A] transition-colors">Descargar app para Android</Link>
+        UniLink © 2026
       </footer>
     </div>
   );

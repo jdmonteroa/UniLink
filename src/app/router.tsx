@@ -6,6 +6,7 @@ import { DiscoverPage } from '@/features/discover/DiscoverPage';
 import { OnboardingFlow } from '@/features/onboarding/OnboardingFlow';
 import { AdminShell } from '@/features/admin/AdminShell';
 import { DownloadPage } from '@/features/download/DownloadPage';
+import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage';
 import { useAuthStore } from '@/features/auth/authStore';
 import { Wordmark } from '@/components/brand';
 
@@ -115,5 +116,7 @@ export const router = createBrowserRouter([
   { path: '/', element: <AppGate /> },
   // Pública: se puede abrir sin iniciar sesión
   { path: '/descargar', element: <DownloadPage /> },
+  // Pública: aquí llega el enlace del correo de "Olvidé mi contraseña"
+  { path: '/restablecer', element: <ResetPasswordPage /> },
   { path: '*', element: <Navigate to="/" replace /> },
 ]);

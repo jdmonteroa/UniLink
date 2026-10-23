@@ -35,32 +35,6 @@ export const supabase = createClient(
   }
 );
 
-/** Traduce errores comunes de Supabase/Postgres a mensajes claros en español. */
-export function friendlyError(err: unknown, fallback = 'Ocurrió un error inesperado.'): string {
-  const raw =
-    typeof err === 'string'
-      ? err
-      : err && typeof err === 'object' && 'message' in err
-        ? String((err as { message: unknown }).message)
-        : '';
-  if (!raw) return fallback;
-  const msg = raw.toLowerCase();
-
-  if (msg.includes('failed to fetch') || msg.includes('networkerror'))
-    return 'No hay conexión con Supabase. Revisa tu internet y la URL en .env.';
-  if (msg.includes('invalid login credentials')) return 'Correo o contraseña incorrectos.';
-  if (msg.includes('email not confirmed'))
-    return 'Aún no confirmas tu correo. Revisa tu bandeja de entrada (y spam) y abre el enlace de confirmación.';
-  if (msg.includes('user already registered')) return 'Ese correo ya tiene cuenta. Inicia sesión.';
-  if (msg.includes('database error saving new user') || msg.includes('no pertenece a una universidad'))
-    return 'Tu correo no pertenece a una universidad registrada. Usa tu correo institucional.';
-  if (msg.includes('user is banned') || msg.includes('banned'))
-    return 'Tu cuenta está bloqueada por acumular sanciones. Si crees que es un error, contacta a los administradores.';
-  if (msg.includes('rate limit') || msg.includes('too many requests'))
-    return 'Demasiados intentos. Espera un minuto e inténtalo de nuevo.';
-  if (msg.includes('could not find the function') || msg.includes('does not exist'))
-    return 'A tu base de datos le falta una actualización. Corre supabase/setup.sql en el SQL Editor de Supabase.';
-  if (msg.includes('row-level security') || msg.includes('permission denied'))
-    return 'Supabase rechazó la operación por permisos (RLS). Corre supabase/setup.sql en el SQL Editor.';
-  return raw;
-}
+// friendlyError vive en su propio archivo (sin dependencias) para poder probarlo; se reexporta aquí
+// para que el resto de la app siga importándolo desde '@/lib/supabaseClient'.
+export { friendlyError } from './friendlyError';
