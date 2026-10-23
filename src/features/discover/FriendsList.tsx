@@ -353,6 +353,8 @@ export const FriendsList: React.FC<FriendsListProps> = ({ active, onGoProfile, o
   // En Amistades nadie desaparece de la lista: "Me interesa" solo cambia su estado
   const markLiked = (id: string, matched: boolean) =>
     setFriends((prev) => {
+      // Con quien ya hiciste match deja de salir aquí: pasa a Matches
+      if (matched) return prev.filter((f) => f.id !== id);
       const next = prev.map((f) => (f.id === id ? { ...f, liked: true, matched } : f));
       // Las personas ya conectadas pasan al final, igual que lo ordena el servidor
       return [...next.filter((f) => !f.liked && !f.matched), ...next.filter((f) => f.liked || f.matched)];

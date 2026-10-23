@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Users, Heart, CalendarDays, Clock, CalendarCheck, ChevronRight, AlertCircle, MessageCircle } from 'lucide-react';
-import { useConnectionsStore, attentionCount, type Connection } from '@/features/connections/connectionsStore';
+import { Users, Heart, CalendarDays, Clock, CalendarCheck, ChevronRight, AlertCircle, MessageCircle, Handshake, Loader2 } from 'lucide-react';
+import { useConnectionsStore, attentionCount, type Connection, type SentInterest } from '@/features/connections/connectionsStore';
 import { MatchDetail } from '@/features/connections/MatchDetail';
 import type { ConnectionModeKey } from '@/features/auth/authStore';
 import { Avatar } from '@/components/Avatar';
@@ -61,14 +61,36 @@ const Row: React.FC<{ c: Connection; onOpen: () => void }> = ({ c, onOpen }) => 
   );
 };
 
+const InterestRow: React.FC<{ item: SentInterest; busy: boolean; onWithdraw: () => void }> = ({ item, busy, onWithdraw }) => (
+  <li className="p-3 rounded-2xl bg-white dark:bg-ink-850 shadow-soft-sm flex items-center gap-3.5">
+    <span className="block rounded-full p-[2.5px] shrink-0" style={{ backgroundColor: MODE_COLOR[item.mode] }}>
+      <Avatar src={item.avatarUrl} name={item.name} className="w-14 h-14 text-lg ring-2 ring-white dark:ring-ink-850" />
+    </span>
+    <span className="min-w-0 flex-1 space-y-0.5">
+      <span className="block font-serif text-lg font-semibold leading-tight truncate">{item.name}</span>
+      <span className="block text-xs text-slate-500 dark:text-haze-400 truncate">{item.career || item.campus}</span>
+      <span className="flex items-start gap-1.5 text-sm leading-snug text-slate-600 dark:text-haze-300">
+        <Handshake className="w-3.5 h-3.5 shrink-0 mt-[3px]" />
+        <span>Esperando a que también te dé la mano · {formatWhen(item.likedAt)}</span>
+      </span>
+    </span>
+    <button onClick={onWithdraw} disabled={busy} className="shrink-0 h-9 px-3 rounded-full text-xs font-semibold border-2 border-slate-900/10 dark:border-white/10 hover:border-slate-900 dark:hover:border-white transition disabled:opacity-50">
+      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Retirar'}
+    </button>
+  </li>
+);
+
 export const ConnectionsView: React.FC<{ onBackToDiscover?: () => void }> = ({ onBackToDiscover }) => {
-  const { connections, isLoading, error, openMatchId, loadConnections, setOpenMatchId } = useConnectionsStore();
+  const { connections, isLoading, error, openMatchId, loadConnections, setOpenMatchId, sentInterests, loadSentInterests, withdrawInterest } = useConnectionsStore();
   const [tab, setTab] = useState<ConnectionModeKey | null>(null);
+  const [filter, setFilter] = useState<'matches' | 'sent'>('matches');
+  const [withdrawing, setWithdrawing] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   useEffect(() => {
     void loadConnections();
-  }, [loadConnections]);
+    void loadSentInterests();
+  }, [loadConnections, loadSentInterests]);
 
   // Llegar desde "¡Hay match!": abre ese match directamente
   useEffect(() => {
@@ -84,6 +106,7 @@ export const ConnectionsView: React.FC<{ onBackToDiscover?: () => void }> = ({ o
   const currentTab: ConnectionModeKey =
     tab ?? (attentionCount(connections, 'friendship') === 0 && attentionCount(connections, 'dating') > 0 ? 'dating' : 'friendship');
   const active = connections.find((c) => c.matchId === activeId) ?? null;
+  const sent = sentInterests.filter((i) => i.mode === currentTab);
 
   const groups = useMemo(() => {
     const list = connections.filter((c) => c.mode === currentTab);
@@ -128,11 +151,33 @@ export const ConnectionsView: React.FC<{ onBackToDiscover?: () => void }> = ({ o
         })}
       </div>
 
+      <div className="flex gap-2" role="group" aria-label="Filtrar">
+        {([['matches', 'Matches'], ['sent', 'Interés enviado']] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setFilter(id)} aria-pressed={filter === id}
+            className={`px-3.5 py-2 rounded-full text-sm font-medium transition-colors ${filter === id ? 'bg-slate-900 text-slate-50 dark:bg-slate-50 dark:text-slate-900' : 'bg-haze-100 dark:bg-ink-800 text-slate-700 dark:text-haze-300 hover:bg-haze-200 dark:hover:bg-ink-700'}`}>
+            {label}{id === 'sent' && sent.length > 0 ? ` (${sent.length})` : ''}
+          </button>
+        ))}
+      </div>
+
       {error && (
         <p className="flex gap-2 text-sm text-rose-700 dark:text-rose-400"><AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />{error}</p>
       )}
 
-      {isLoading && connections.length === 0 ? (
+      {filter === 'sent' ? (
+        sent.length === 0 ? (
+          <p className="text-sm text-center text-slate-500 dark:text-haze-400 px-6 py-10 rounded-3xl border-2 border-dashed border-slate-900/10 dark:border-white/10">
+            Aún no le has dado la mano a nadie{currentTab === 'dating' ? ' en Pareja' : ' en Amistades'}. Cuando lo hagas y la otra persona no haya respondido, aparecerá aquí.
+          </p>
+        ) : (
+          <ul className="space-y-2.5">
+            {sent.map((i) => (
+              <InterestRow key={`${i.mode}-${i.id}`} item={i} busy={withdrawing === i.id}
+                onWithdraw={() => { setWithdrawing(i.id); void withdrawInterest(i).finally(() => setWithdrawing(null)); }} />
+            ))}
+          </ul>
+        )
+      ) : isLoading && connections.length === 0 ? (
         <Spinner />
       ) : groups.total === 0 ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col items-center text-center gap-4 px-6 py-12 rounded-3xl border-2 border-dashed border-slate-900/10 dark:border-white/10">
