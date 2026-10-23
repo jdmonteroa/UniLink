@@ -74,7 +74,7 @@ export const MatchChat: React.FC<{ connection: Connection }> = ({ connection }) 
         {messages.map((m) => {
           const mine = m.senderId === user?.id;
           return (
-            <li key={m.id} className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${mine ? 'ml-auto bg-brand-600 text-white' : 'mr-auto bg-white dark:bg-ink-850 shadow-soft-sm'}`}>
+            <li key={m.id} className={`w-fit max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${mine ? 'ml-auto bg-brand-600 text-white' : 'mr-auto bg-white dark:bg-ink-850 shadow-soft-sm'}`}>
               <p className="whitespace-pre-wrap break-words leading-snug">{m.content}</p>
               <p className={`text-[10px] mt-1 ${mine ? 'text-white/75' : 'text-slate-400'}`}>{hhmm(m.createdAt)} · se borra en {remaining(m.createdAt)}</p>
             </li>
