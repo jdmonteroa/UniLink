@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { CalendarDays, User, Users, LogOut } from 'lucide-react';
+import { CalendarDays, User, Users, Flag, LogOut } from 'lucide-react';
 import { useAuthStore } from '@/features/auth/authStore';
 import { useThemeStore } from '@/features/theme/themeStore';
 import { useEventsStore } from '@/features/events/eventsStore';
@@ -9,10 +9,11 @@ import { GroupsModeration } from '@/features/groups/GroupsModeration';
 import { useGroupsStore } from '@/features/groups/groupsStore';
 import { Highlight } from '@/components/brand';
 import { AdminProfile } from '@/features/admin/AdminProfile';
+import { ReportsModeration } from '@/features/admin/ReportsModeration';
 import { SunIcon, MoonIcon } from '@/components/icons';
 import { Wordmark, spring } from '@/components/brand';
 
-type Tab = 'events' | 'groups' | 'profile';
+type Tab = 'events' | 'groups' | 'reports' | 'profile';
 
 /**
  * App de administración: solo Eventos (moderación) y Perfil. Los administradores no usan
@@ -22,6 +23,7 @@ export const AdminShell: React.FC = () => {
   const { logout, isDemo } = useAuthStore();
   const { isDarkMode, toggleDarkMode } = useThemeStore();
   const [tab, setTab] = useState<Tab>('events');
+  const [reportCount, setReportCount] = useState(0);
   const pending = useEventsStore((s) => s.queue.length);
   const loadQueue = useEventsStore((s) => s.loadQueue);
   const groupPending = useGroupsStore((s) => s.submissions.length + s.changeRequests.length);
@@ -74,16 +76,26 @@ export const AdminShell: React.FC = () => {
               <GroupsModeration />
             </div>
           )}
+          {tab === 'reports' && (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-4xl font-semibold leading-none"><Highlight>Reportes</Highlight></h2>
+                <p className="text-sm text-slate-500 dark:text-haze-400 mt-3">Reportes entre estudiantes, con una copia de los mensajes de las últimas 24 horas.</p>
+              </div>
+              <ReportsModeration onCount={setReportCount} />
+            </div>
+          )}
           {tab === 'profile' && <AdminProfile />}
         </main>
       </div>
 
       <nav className="shrink-0 z-40 pb-[env(safe-area-inset-bottom)] bg-haze-50/90 dark:bg-ink-950/90 backdrop-blur-md border-t border-slate-900/[0.06] dark:border-white/[0.06]">
-        <div className="max-w-md mx-auto px-6 py-2 grid grid-cols-3">
+        <div className="max-w-md mx-auto px-6 py-2 grid grid-cols-4">
           {(
             [
               { id: 'events', label: 'Eventos', Icon: CalendarDays },
               { id: 'groups', label: 'Grupos', Icon: Users },
+              { id: 'reports', label: 'Reportes', Icon: Flag },
               { id: 'profile', label: 'Mi perfil', Icon: User },
             ] as const
           ).map(({ id, label, Icon }) => {
@@ -100,7 +112,7 @@ export const AdminShell: React.FC = () => {
               >
                 <span className="relative">
                   <Icon className="w-5.5 h-5.5" strokeWidth={on ? 2.25 : 2} />
-                  {((id === 'events' && pending > 0) || (id === 'groups' && groupPending > 0)) && (
+                  {((id === 'events' && pending > 0) || (id === 'groups' && groupPending > 0) || (id === 'reports' && reportCount > 0)) && (
                     <span className="absolute -top-0.5 -right-1 w-2.5 h-2.5 rounded-full bg-brand-600 ring-2 ring-haze-50 dark:ring-ink-950" />
                   )}
                 </span>
