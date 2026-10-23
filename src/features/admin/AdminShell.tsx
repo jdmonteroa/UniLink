@@ -1,15 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { CalendarDays, User, LogOut } from 'lucide-react';
+import { CalendarDays, User, Users, LogOut } from 'lucide-react';
 import { useAuthStore } from '@/features/auth/authStore';
 import { useThemeStore } from '@/features/theme/themeStore';
 import { useEventsStore } from '@/features/events/eventsStore';
 import { EventsView } from '@/features/events/EventsView';
+import { GroupsModeration } from '@/features/groups/GroupsModeration';
+import { useGroupsStore } from '@/features/groups/groupsStore';
+import { Highlight } from '@/components/brand';
 import { AdminProfile } from '@/features/admin/AdminProfile';
 import { SunIcon, MoonIcon } from '@/components/icons';
 import { Wordmark, spring } from '@/components/brand';
 
-type Tab = 'events' | 'profile';
+type Tab = 'events' | 'groups' | 'profile';
 
 /**
  * App de administración: solo Eventos (moderación) y Perfil. Los administradores no usan
@@ -21,10 +24,13 @@ export const AdminShell: React.FC = () => {
   const [tab, setTab] = useState<Tab>('events');
   const pending = useEventsStore((s) => s.queue.length);
   const loadQueue = useEventsStore((s) => s.loadQueue);
+  const groupPending = useGroupsStore((s) => s.submissions.length + s.changeRequests.length);
+  const loadGroupModeration = useGroupsStore((s) => s.loadModeration);
 
   useEffect(() => {
     void loadQueue();
-  }, [loadQueue]);
+    void loadGroupModeration();
+  }, [loadQueue, loadGroupModeration]);
 
   return (
     <div className="h-dvh bg-haze-50 dark:bg-ink-950 text-slate-900 dark:text-slate-50 flex flex-col transition-colors duration-500 overflow-hidden">
@@ -58,15 +64,26 @@ export const AdminShell: React.FC = () => {
 
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain">
         <main className="max-w-md w-full mx-auto px-4 py-4">
-          {tab === 'events' ? <EventsView defaultTab="queue" /> : <AdminProfile />}
+          {tab === 'events' && <EventsView defaultTab="queue" />}
+          {tab === 'groups' && (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-4xl font-semibold leading-none"><Highlight>Grupos</Highlight></h2>
+                <p className="text-sm text-slate-500 dark:text-haze-400 mt-3">Aprueba los grupos nuevos y resuelve las peticiones.</p>
+              </div>
+              <GroupsModeration />
+            </div>
+          )}
+          {tab === 'profile' && <AdminProfile />}
         </main>
       </div>
 
       <nav className="shrink-0 z-40 pb-[env(safe-area-inset-bottom)] bg-haze-50/90 dark:bg-ink-950/90 backdrop-blur-md border-t border-slate-900/[0.06] dark:border-white/[0.06]">
-        <div className="max-w-md mx-auto px-6 py-2 grid grid-cols-2">
+        <div className="max-w-md mx-auto px-6 py-2 grid grid-cols-3">
           {(
             [
               { id: 'events', label: 'Eventos', Icon: CalendarDays },
+              { id: 'groups', label: 'Grupos', Icon: Users },
               { id: 'profile', label: 'Mi perfil', Icon: User },
             ] as const
           ).map(({ id, label, Icon }) => {
@@ -83,7 +100,7 @@ export const AdminShell: React.FC = () => {
               >
                 <span className="relative">
                   <Icon className="w-5.5 h-5.5" strokeWidth={on ? 2.25 : 2} />
-                  {id === 'events' && pending > 0 && (
+                  {((id === 'events' && pending > 0) || (id === 'groups' && groupPending > 0)) && (
                     <span className="absolute -top-0.5 -right-1 w-2.5 h-2.5 rounded-full bg-brand-600 ring-2 ring-haze-50 dark:ring-ink-950" />
                   )}
                 </span>

@@ -14,7 +14,7 @@
 - **Amistades**: una **lista** de estudiantes. Cada fila muestra su foto, su carrera y lo que le gusta hacer (los intereses que comparten contigo resaltan). Se filtra por carrera, semestre, campus, materia que cursa y lo que le gusta, se puede buscar por texto, y hay atajos como "Mi carrera", "Mi semestre" y "Cursan lo mismo que yo". Desde la lista se da "Me interesa" u "Ocultar"; si el interés es mutuo, se crea el match.
 - **Pareja**: tarjetas que se deslizan a la derecha ("Me interesa") o a la izquierda ("Pasar"), con un porcentaje de afinidad calculado a partir de materias, intereses, horario libre, carrera, campus y actividad reciente.
 - **Matches y encuentros**: los matches se dividen en **Amistades** y **Pareja**. En esta versión **no hay chat**: cada match se conecta proponiendo un encuentro en la escuela (ver [Encuentros](#encuentros)). Incluye deshacer match, bloquear y reportar.
-- **Grupos**: cualquiera crea un grupo (nombre, categoría, descripción, imagen y enlace de WhatsApp u otra red). Son visibles para toda la universidad; se pide permiso para entrar y un administrador del grupo lo acepta. Solo los miembros ven el enlace. El creador es administrador y nombra más administradores entre los miembros.
+- **Grupos**: cualquiera puede **proponer** un grupo (nombre, categoría, descripción, imagen y enlace de WhatsApp u otra red), pero **un administrador lo revisa antes de publicarlo** (nombre, imagen y descripción). Una vez aprobado es visible para toda la universidad; se pide permiso para entrar y un administrador del grupo lo acepta. Solo los miembros ven el enlace. El creador es administrador del grupo y nombra más administradores entre los miembros. Ver [Moderación de grupos](#moderación-de-grupos).
 - **Eventos y avisos**: cualquiera puede mandar uno (texto, imagen o ambos), pero nada se publica hasta que un moderador lo aprueba. Ver [Moderación de eventos](#moderación-de-eventos).
 - **Perfil**: hasta 2 fotos, biografía, Instagram (solo lo ven tus matches), intereses, materias y horario libre.
 - **Modo día y noche**.
@@ -141,10 +141,21 @@ Todo evento o aviso nace **en revisión** y solo se publica cuando un moderador 
   ```
 - **Otras protecciones**: máximo 3 publicaciones activas por persona, quien tenga la cuenta bloqueada no puede publicar, los eventos expiran solos (6 h después de su hora, o 14 días si son avisos) y un evento ya publicado vuelve a revisión si 2 personas distintas lo reportan.
 
+### Moderación de grupos
+Los grupos pasan por revisión igual que los eventos, y quienes los crean no los eliminan por su cuenta.
+
+- **Crear:** un grupo nuevo nace *en revisión* (`groups.status = 'pending'`): nadie más lo ve ni puede pedir entrar. Un moderador o administrador ve nombre, imagen, descripción, quién lo envió (con sus rechazos previos), de qué plataforma es el enlace (no el enlace) y el resultado del filtro de texto, y lo **aprueba** o lo **rechaza con un motivo** que ve quien lo envió. Un grupo rechazado se corrige y se reenvía desde el mismo grupo.
+- **Editar:** cambiar el nombre, la descripción o la imagen de un grupo aprobado lo **vuelve a revisión** (para que nadie cambie un grupo aprobado por otra cosa). Cambiar solo el enlace o la categoría es inmediato.
+- **Eliminar:** un grupo **solo lo elimina un moderador o administrador de la plataforma, con motivo**, y nunca uno que él mismo creó. Quien creó o administra un grupo **no lo elimina por su cuenta en ningún estado** (en revisión, rechazado o aprobado): manda una petición (ver *Pedir cambios*).
+- **Pedir cambios:** quien administra un grupo manda una **petición con motivo** (mínimo 10 caracteres): *eliminar el grupo* (vale en cualquier estado) o *que lo lleve otra persona* (solo el creador, solo un grupo aprobado, y esa persona debe ser miembro). Un moderador o administrador la aprueba o la rechaza (con motivo, que ven los administradores del grupo); nadie resuelve su propia petición, salvo un administrador. Hay una petición activa por grupo. Al aprobar un traspaso, la persona elegida queda como creadora y administradora.
+- **Dónde se modera:** en *Grupos → Moderación* para moderadores y en la pestaña *Grupos* del panel de administración. Hay un puntito rojo cuando hay algo pendiente.
+- **Bitácora:** `group_moderation_log` guarda aprobaciones, rechazos, traspasos y eliminaciones (quién, cuándo y por qué), aun después de borrar el grupo.
+- Los grupos que ya existían antes de este cambio quedan **aprobados** al correr `setup.sql`. Los roles `moderator`/`admin` son los mismos de la moderación de eventos.
+
 ### Administradores
 Las cuentas de administración se crean con `supabase/seed-admins.sql` (se corre **después** de `setup.sql`; no forma parte de `setup.sql` a propósito). Crea `admin1@edu.uaa.mx` y `admin2@edu.uaa.mx` ya confirmados, sin verificación ni onboarding.
 
-- Solo ven **Eventos** (abre directo en *Moderación*) y **Mi perfil**. No aparecen en Descubrir ni usan Matches o Grupos.
+- Solo ven **Eventos** (abre directo en *Moderación*), **Grupos** (solo la moderación: grupos por aprobar, peticiones y todos los grupos) y **Mi perfil**. No aparecen en Descubrir ni usan Matches.
 - La contraseña inicial está escrita en ese archivo: **cámbiala en el primer inicio de sesión** (Mi perfil → Cambiar contraseña) y no subas el archivo a un repositorio público.
 - Para volver a alguien administrador o quitarle el acceso: `UPDATE public.profiles SET role = 'admin' | 'student' WHERE id = '<uuid>';`
 
