@@ -333,7 +333,7 @@ export const OnboardingFlow: React.FC = () => {
                       value={birthDate}
                       max={new Date().toISOString().slice(0, 10)}
                       onChange={(e) => setBirthDate(e.target.value)}
-                      className={inputCls}
+                      className={`${inputCls} [&::-webkit-calendar-picker-indicator]:opacity-0`}
                     />
                     <Calendar className="w-4 h-4 text-slate-500 dark:text-haze-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   </div>

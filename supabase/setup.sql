@@ -474,9 +474,11 @@ USING (public.is_match_participant(match_id));
 
 -- Mensajes
 DROP POLICY IF EXISTS "Ver mensajes de mis conversaciones" ON public.messages;
+-- Chat temporal: un mensaje deja de verse a las 24 horas (y purge_expired_messages lo borra de verdad).
 CREATE POLICY "Ver mensajes de mis conversaciones" ON public.messages FOR SELECT TO authenticated
 USING (
   is_hidden = FALSE
+  AND created_at > NOW() - INTERVAL '24 hours'
   AND EXISTS (
     SELECT 1 FROM public.conversations c
     WHERE c.id = messages.conversation_id AND public.is_match_participant(c.match_id)
@@ -821,8 +823,9 @@ INSERT INTO public.matching_weights (key, weight) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 DROP FUNCTION IF EXISTS public.get_recommendations(TEXT, INTEGER);
+DROP FUNCTION IF EXISTS public.recommendations_core(TEXT, INTEGER, BOOLEAN);
 
-CREATE FUNCTION public.get_recommendations(target_mode TEXT, result_limit INTEGER DEFAULT 20)
+CREATE FUNCTION public.recommendations_core(target_mode TEXT, result_limit INTEGER, include_evaluated BOOLEAN)
 RETURNS TABLE (
   profile_id UUID,
   full_name TEXT,
@@ -840,7 +843,9 @@ RETURNS TABLE (
   shared_subjects JSONB,
   shared_interests JSONB,
   interests JSONB,
-  schedule_overlap TEXT
+  schedule_overlap TEXT,
+  my_action TEXT,
+  is_matched BOOLEAN
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
 AS $$
@@ -883,7 +888,13 @@ BEGIN
       p.bio AS c_bio, p.semester AS c_semester, p.is_photo_verified AS c_verified,
       p.campus_id AS c_campus, p.career_id AS c_career, p.last_active_at AS c_active,
       car.name AS c_career_name, car.area AS c_area, cam.name AS c_campus_name,
-      EXTRACT(YEAR FROM age(p.birth_date))::INTEGER AS c_age
+      EXTRACT(YEAR FROM age(p.birth_date))::INTEGER AS c_age,
+      ARRAY(SELECT pi.interest_id FROM public.profile_interests pi WHERE pi.profile_id = p.id) AS c_ints,
+      (SELECT s.action FROM public.swipes s WHERE s.from_id = me AND s.to_id = p.id AND s.mode = target_mode) AS c_action,
+      EXISTS (
+        SELECT 1 FROM public.matches mt
+        WHERE mt.user_a = LEAST(me, p.id) AND mt.user_b = GREATEST(me, p.id) AND mt.mode = target_mode AND mt.is_active = TRUE
+      ) AS c_matched
     FROM public.profiles p
     LEFT JOIN public.careers car ON car.id = p.career_id
     LEFT JOIN public.campuses cam ON cam.id = p.campus_id
@@ -893,10 +904,14 @@ BEGIN
       AND p.role = 'student' -- moderadores y administradores no participan en Descubrir
       AND p.is_paused = FALSE
       AND (p.is_suspended = FALSE OR (p.suspended_until IS NOT NULL AND p.suspended_until < NOW()))
-      AND NOT EXISTS (
+      -- Un "Me interesa" saca a la persona de las recomendaciones (ya está pendiente o es un match).
+      -- Un "Pasar" NO la oculta para siempre: solo descansa 3 días y después puede volver a salir, con menos
+      -- prioridad si se parece a perfiles que pasaste. En la lista de Amistades (include_evaluated) siempre salen todos.
+      AND (include_evaluated OR NOT EXISTS (
         SELECT 1 FROM public.swipes s
         WHERE s.from_id = me AND s.to_id = p.id AND s.mode = target_mode
-      )
+          AND (s.action = 'like' OR s.created_at > NOW() - INTERVAL '3 days')
+      ))
       AND NOT EXISTS (
         SELECT 1 FROM public.blocks b
         WHERE (b.blocker_id = me AND b.blocked_id = p.id) OR (b.blocker_id = p.id AND b.blocked_id = me)
@@ -923,6 +938,17 @@ BEGIN
         )
       )
   ),
+  -- Los últimos perfiles que pasé: dejan de recomendarse cosas parecidas (intereses y carrera)
+  passed AS (
+    SELECT q.id AS q_id, q.career_id AS q_career,
+           ARRAY(SELECT pi.interest_id FROM public.profile_interests pi WHERE pi.profile_id = q.id) AS q_ints
+    FROM (
+      SELECT s.to_id FROM public.swipes s
+      WHERE s.from_id = me AND s.mode = target_mode AND s.action = 'pass'
+      ORDER BY s.created_at DESC LIMIT 20
+    ) ps
+    JOIN public.profiles q ON q.id = ps.to_id
+  ),
   scored AS (
     SELECT
       c.*,
@@ -942,7 +968,16 @@ BEGIN
       ) AS ints,
       (SELECT COUNT(*) FROM public.profile_interests x WHERE x.profile_id IN (me, c.c_id))::NUMERIC AS ints_rows,
       ov.minutes AS ov_minutes,
-      ov.label AS ov_label
+      ov.label AS ov_label,
+      -- Parecido máximo (0 a 1.25) con alguno de los perfiles que pasé
+      CASE WHEN include_evaluated THEN 0 ELSE COALESCE((
+        SELECT MAX(
+          CASE WHEN cardinality(c.c_ints) + cardinality(pq.q_ints) = 0 THEN 0
+               ELSE cardinality(ARRAY(SELECT unnest(c.c_ints) INTERSECT SELECT unnest(pq.q_ints)))::NUMERIC
+                    / NULLIF(cardinality(ARRAY(SELECT unnest(c.c_ints) UNION SELECT unnest(pq.q_ints))), 0) END
+          + CASE WHEN pq.q_career IS NOT NULL AND pq.q_career = c.c_career THEN 0.25 ELSE 0 END
+        ) FROM passed pq
+      ), 0) END AS pass_sim
     FROM cand c
     LEFT JOIN LATERAL (
       SELECT
@@ -983,7 +1018,7 @@ BEGIN
       + w_cam * CASE WHEN sc.c_campus = my_campus THEN 1 ELSE 0 END
       + w_act * CASE WHEN sc.c_active > NOW() - INTERVAL '3 days' THEN 1
                      WHEN sc.c_active > NOW() - INTERVAL '14 days' THEN 0.5 ELSE 0 END
-    ) / w_total))::INTEGER,
+    ) / w_total * (1 - LEAST(0.4, 0.5 * sc.pass_sim))))::INTEGER,
     to_jsonb(array_remove(ARRAY[
       CASE WHEN cardinality(sc.subs) = 1 THEN 'Comparten 1 materia'
            WHEN cardinality(sc.subs) > 1 THEN 'Comparten ' || cardinality(sc.subs) || ' materias' END,
@@ -999,11 +1034,32 @@ BEGIN
       FROM public.profile_interests pi JOIN public.interests i ON i.id = pi.interest_id
       WHERE pi.profile_id = sc.c_id
     ), '[]'::jsonb),
-    sc.ov_label
+    sc.ov_label,
+    sc.c_action,
+    COALESCE(sc.c_matched, FALSE)
   FROM scored sc
-  ORDER BY 12 DESC, sc.c_active DESC NULLS LAST
+  -- Con include_evaluated las personas con las que ya hay interés o match van al final
+  ORDER BY (sc.c_matched OR COALESCE(sc.c_action, '') = 'like') ASC, 12 DESC, sc.c_active DESC NULLS LAST
   LIMIT result_limit;
 END;
+$$;
+
+
+REVOKE EXECUTE ON FUNCTION public.recommendations_core(TEXT, INTEGER, BOOLEAN) FROM PUBLIC, anon, authenticated;
+
+-- Pareja (tarjetas): recomendaciones sin quien ya tiene "Me interesa" ni los "Pasar" de los últimos 3 días.
+CREATE FUNCTION public.get_recommendations(target_mode TEXT, result_limit INTEGER DEFAULT 20)
+RETURNS TABLE (
+  profile_id UUID, full_name TEXT, age INTEGER, gender TEXT, pronouns TEXT, career_name TEXT, campus_name TEXT,
+  semester INTEGER, bio TEXT, is_photo_verified BOOLEAN, photos JSONB, compatibility_score INTEGER,
+  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB, schedule_overlap TEXT
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT r.profile_id, r.full_name, r.age, r.gender, r.pronouns, r.career_name, r.campus_name,
+         r.semester, r.bio, r.is_photo_verified, r.photos, r.compatibility_score,
+         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests, r.schedule_overlap
+  FROM public.recommendations_core(target_mode, result_limit, FALSE) r;
 $$;
 
 
@@ -1234,7 +1290,8 @@ CREATE FUNCTION public.list_students(
 RETURNS TABLE (
   profile_id UUID, full_name TEXT, age INTEGER, career_name TEXT, campus_name TEXT, semester INTEGER,
   bio TEXT, is_photo_verified BOOLEAN, photos JSONB, compatibility_score INTEGER,
-  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB
+  match_reasons JSONB, shared_subjects JSONB, shared_interests JSONB, interests JSONB,
+  my_action TEXT, is_matched BOOLEAN
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
 AS $$
@@ -1247,11 +1304,15 @@ BEGIN
     q := '%' || replace(replace(replace(lower(left(q, 60)), '\', '\\'), '%', '\%'), '_', '\_') || '%';
   END IF;
 
+  -- En Amistades SIEMPRE hay gente: se muestran todas las personas compatibles (también las que ya
+  -- evaluaste), con su estado (my_action = 'like' si ya les mostraste interés; is_matched si ya conectaron),
+  -- y las conectadas van al final.
   RETURN QUERY
   SELECT r.profile_id, r.full_name, r.age, r.career_name, r.campus_name, r.semester,
          r.bio, r.is_photo_verified, r.photos, r.compatibility_score,
-         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests
-  FROM public.get_recommendations(p_mode, 1000) r
+         r.match_reasons, r.shared_subjects, r.shared_interests, r.interests,
+         r.my_action, r.is_matched
+  FROM public.recommendations_core(p_mode, 1000, TRUE) r
   JOIN public.profiles p ON p.id = r.profile_id
   WHERE (p_career IS NULL OR p.career_id = p_career)
     AND (p_campus IS NULL OR p.campus_id = p_campus)
@@ -1265,14 +1326,52 @@ BEGIN
          OR lower(COALESCE(r.bio, '')) LIKE q
          OR lower(COALESCE(r.career_name, '')) LIKE q
          OR lower(r.interests::TEXT) LIKE q)
-  ORDER BY r.compatibility_score DESC, r.full_name
+  ORDER BY (r.is_matched OR COALESCE(r.my_action, '') = 'like') ASC, r.compatibility_score DESC, r.full_name
   LIMIT LEAST(GREATEST(COALESCE(p_limit, 40), 1), 100)
   OFFSET GREATEST(COALESCE(p_offset, 0), 0);
 END;
 $$;
 
+-- Registra "Me interesa" o "Pasar". Se puede cambiar de opinión (la respuesta nueva reemplaza a la anterior).
+-- Devuelve el id del match si con este "Me interesa" se formó uno.
+DROP FUNCTION IF EXISTS public.record_swipe(UUID, TEXT, TEXT);
+CREATE FUNCTION public.record_swipe(p_to UUID, p_mode TEXT, p_action TEXT)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  match_id UUID;
+BEGIN
+  IF me IS NULL OR p_to IS NULL OR p_to = me THEN RAISE EXCEPTION 'Operación no válida.'; END IF;
+  IF p_mode NOT IN ('friendship', 'dating') THEN RAISE EXCEPTION 'Modo no válido.'; END IF;
+  IF p_action NOT IN ('like', 'pass') THEN RAISE EXCEPTION 'Acción no válida.'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.profiles a JOIN public.profiles b ON b.university_id = a.university_id
+    WHERE a.id = me AND b.id = p_to
+  ) OR EXISTS (
+    SELECT 1 FROM public.blocks b
+    WHERE (b.blocker_id = me AND b.blocked_id = p_to) OR (b.blocker_id = p_to AND b.blocked_id = me)
+  ) THEN
+    RAISE EXCEPTION 'Esa persona no está disponible.';
+  END IF;
+
+  -- El disparador handle_swipe_action revisa el límite diario y crea el match si es mutuo.
+  INSERT INTO public.swipes (from_id, to_id, mode, action) VALUES (me, p_to, p_mode, p_action)
+  ON CONFLICT (from_id, to_id, mode) DO UPDATE SET action = EXCLUDED.action, created_at = NOW();
+
+  IF p_action = 'like' THEN
+    SELECT m.id INTO match_id FROM public.matches m
+    WHERE m.user_a = LEAST(me, p_to) AND m.user_b = GREATEST(me, p_to) AND m.mode = p_mode AND m.is_active = TRUE;
+  END IF;
+  RETURN match_id;
+END;
+$$;
+
 GRANT EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.record_swipe(UUID, TEXT, TEXT) TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.list_students(TEXT, UUID, UUID, INTEGER, UUID, UUID, TEXT, INTEGER, INTEGER) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.record_swipe(UUID, TEXT, TEXT) FROM anon;
 
 -- ------------------------------------------------------------------------------
 -- 2.15 ENCUENTROS (reemplazan al chat entre matches)
@@ -1550,7 +1649,8 @@ RETURNS TABLE (
   other_bio TEXT, other_photo TEXT, other_instagram TEXT, other_verified BOOLEAN, other_interests JSONB,
   meetup_id UUID, meetup_status TEXT, meetup_proposer_is_me BOOLEAN, meetup_place TEXT, meetup_when TIMESTAMPTZ,
   meetup_round INTEGER, meetup_note TEXT, meetup_response_note TEXT, meetup_updated_at TIMESTAMPTZ,
-  needs_attention BOOLEAN
+  needs_attention BOOLEAN,
+  conversation_id UUID, last_message TEXT, last_message_at TIMESTAMPTZ, last_sender_id UUID, unread_count INTEGER
 )
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
@@ -1559,6 +1659,7 @@ DECLARE me UUID := auth.uid();
 BEGIN
   IF me IS NULL THEN RETURN; END IF;
   PERFORM public.expire_my_stale_meetups();
+  PERFORM public.purge_expired_messages();
   RETURN QUERY
   SELECT m.id, m.mode, m.created_at,
          o.id, o.full_name, car.name, cam.name, o.semester,
@@ -1575,8 +1676,10 @@ BEGIN
            (cur.status = 'pending' AND cur.recipient_id = me)
            OR (cur.status IN ('accepted', 'declined', 'cancelled')
                AND cur.updated_by IS DISTINCT FROM me
-               AND cur.updated_at > COALESCE(rd.seen_at, '-infinity'::TIMESTAMPTZ)),
-           FALSE)
+               AND cur.updated_at > COALESCE(rd.seen_at, '-infinity'::TIMESTAMPTZ))
+           OR COALESCE(chat.unread, 0) > 0,
+           FALSE),
+         conv.id, chat.last_message, chat.last_at, chat.last_sender, COALESCE(chat.unread, 0)
   FROM public.matches m
   JOIN public.profiles o ON o.id = CASE WHEN m.user_a = me THEN m.user_b ELSE m.user_a END
   LEFT JOIN public.careers car ON car.id = o.career_id
@@ -1585,13 +1688,29 @@ BEGIN
   LEFT JOIN LATERAL (
     SELECT x.* FROM public.meetups x WHERE x.match_id = m.id ORDER BY x.created_at DESC LIMIT 1
   ) cur ON TRUE
+  LEFT JOIN public.conversations conv ON conv.match_id = m.id
+  LEFT JOIN LATERAL (
+    SELECT
+      (SELECT x.content FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.is_hidden = FALSE AND x.created_at > NOW() - INTERVAL '24 hours'
+        ORDER BY x.created_at DESC LIMIT 1) AS last_message,
+      (SELECT x.created_at FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.is_hidden = FALSE AND x.created_at > NOW() - INTERVAL '24 hours'
+        ORDER BY x.created_at DESC LIMIT 1) AS last_at,
+      (SELECT x.sender_id FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.is_hidden = FALSE AND x.created_at > NOW() - INTERVAL '24 hours'
+        ORDER BY x.created_at DESC LIMIT 1) AS last_sender,
+      (SELECT COUNT(*)::INTEGER FROM public.messages x
+        WHERE x.conversation_id = conv.id AND x.sender_id <> me AND x.read_at IS NULL AND x.is_hidden = FALSE
+          AND x.created_at > NOW() - INTERVAL '24 hours') AS unread
+  ) chat ON TRUE
   WHERE me IN (m.user_a, m.user_b)
     AND m.is_active = TRUE
     AND NOT EXISTS (
       SELECT 1 FROM public.blocks b
       WHERE (b.blocker_id = me AND b.blocked_id = o.id) OR (b.blocker_id = o.id AND b.blocked_id = me)
     )
-  ORDER BY 23 DESC, COALESCE(cur.updated_at, m.created_at) DESC;
+  ORDER BY 23 DESC, GREATEST(COALESCE(cur.updated_at, m.created_at), COALESCE(chat.last_at, m.created_at)) DESC;
 END;
 $$;
 
@@ -1619,6 +1738,128 @@ REVOKE EXECUTE ON FUNCTION public.cancel_meetup(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.mark_match_seen(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_match_meetups(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_my_connections() FROM anon;
+
+
+-- ------------------------------------------------------------------------------
+-- 2.16 CHAT TEMPORAL (los mensajes se borran a las 24 horas)
+-- Cada match (Amistades y Pareja) tiene un chat cuyos mensajes caducan a las 24 h:
+--   * Dejan de VERSE a las 24 h aunque todavía no se hayan borrado (política de lectura de messages).
+--   * purge_expired_messages() los BORRA de verdad. Se ejecuta cuando alguien abre sus matches y, si la
+--     extensión pg_cron está activada (Database → Extensions), cada 10 minutos.
+--   * Si alguien REPORTA a otra persona, se guarda una copia de los mensajes de esa conversación de las
+--     últimas 24 h en report_message_snapshots, que solo ven los moderadores: sin eso la evidencia
+--     desaparecería sola.
+-- ------------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_messages_created ON public.messages(created_at);
+
+CREATE OR REPLACE FUNCTION public.purge_expired_messages()
+RETURNS INTEGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE removed INTEGER;
+BEGIN
+  DELETE FROM public.messages WHERE created_at < NOW() - INTERVAL '24 hours';
+  GET DIAGNOSTICS removed = ROW_COUNT;
+  RETURN removed;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.purge_expired_messages() FROM PUBLIC, anon, authenticated;
+
+CREATE TABLE IF NOT EXISTS public.report_message_snapshots (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    report_id UUID NOT NULL REFERENCES public.reports(id) ON DELETE CASCADE,
+    sender_id UUID,
+    content TEXT,
+    message_created_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_snapshots_report ON public.report_message_snapshots(report_id);
+ALTER TABLE public.report_message_snapshots ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Moderadores ven la evidencia de reportes" ON public.report_message_snapshots;
+CREATE POLICY "Moderadores ven la evidencia de reportes" ON public.report_message_snapshots FOR SELECT TO authenticated
+USING (public.is_moderator_or_admin());
+
+CREATE OR REPLACE FUNCTION public.snapshot_report_messages()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.report_message_snapshots (report_id, sender_id, content, message_created_at)
+  SELECT NEW.id, msg.sender_id, msg.content, msg.created_at
+  FROM public.matches m
+  JOIN public.conversations c ON c.match_id = m.id
+  JOIN public.messages msg ON msg.conversation_id = c.id
+  WHERE m.user_a = LEAST(NEW.reporter_id, NEW.reported_id)
+    AND m.user_b = GREATEST(NEW.reporter_id, NEW.reported_id)
+    AND msg.is_hidden = FALSE
+    AND msg.created_at > NOW() - INTERVAL '24 hours'
+  ORDER BY msg.created_at
+  LIMIT 200;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_report_snapshot ON public.reports;
+CREATE TRIGGER on_report_snapshot
+  AFTER INSERT ON public.reports
+  FOR EACH ROW EXECUTE FUNCTION public.snapshot_report_messages();
+
+-- Limpieza automática cada 10 minutos (solo si pg_cron está activado; si no, se limpia al abrir los matches)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    PERFORM cron.unschedule(jobid) FROM cron.job WHERE jobname = 'unilink-purge-messages';
+    PERFORM cron.schedule('unilink-purge-messages', '*/10 * * * *', 'SELECT public.purge_expired_messages()');
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'No se pudo programar la limpieza automática de mensajes: %', SQLERRM;
+END $$;
+
+-- Revisión de reportes entre personas (moderadores y administradores), con la copia de los mensajes
+DROP FUNCTION IF EXISTS public.get_reports_for_review();
+CREATE FUNCTION public.get_reports_for_review()
+RETURNS TABLE (
+  id UUID, created_at TIMESTAMPTZ, status TEXT, reason TEXT, description TEXT,
+  reporter_name TEXT, reported_id UUID, reported_name TEXT, reports_against INTEGER, messages JSONB
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_moderator_or_admin() THEN RETURN; END IF;
+  RETURN QUERY
+  SELECT r.id, r.created_at, r.status, r.reason, r.description,
+         rp.full_name, r.reported_id, rd.full_name,
+         (SELECT COUNT(*)::INTEGER FROM public.reports x WHERE x.reported_id = r.reported_id),
+         COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+                    'sender', CASE WHEN sn.sender_id = r.reporter_id THEN rp.full_name ELSE rd.full_name END,
+                    'content', sn.content, 'at', sn.message_created_at) ORDER BY sn.message_created_at)
+           FROM public.report_message_snapshots sn WHERE sn.report_id = r.id
+         ), '[]'::jsonb)
+  FROM public.reports r
+  JOIN public.profiles rp ON rp.id = r.reporter_id
+  JOIN public.profiles rd ON rd.id = r.reported_id
+  WHERE r.status IN ('pending', 'investigating')
+  ORDER BY r.created_at DESC
+  LIMIT 100;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.resolve_report(UUID, TEXT);
+CREATE FUNCTION public.resolve_report(p_report UUID, p_status TEXT)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_moderator_or_admin() THEN RAISE EXCEPTION 'No tienes permiso para revisar reportes.'; END IF;
+  IF p_status NOT IN ('investigating', 'resolved', 'dismissed') THEN RAISE EXCEPTION 'Estado no válido.'; END IF;
+  UPDATE public.reports SET status = p_status WHERE id = p_report;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.get_reports_for_review() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.resolve_report(UUID, TEXT) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.get_reports_for_review() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.resolve_report(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_my_matches() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.unmatch(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.block_user(UUID) FROM anon;
@@ -1627,7 +1868,7 @@ REVOKE EXECUTE ON FUNCTION public.ensure_my_profile() FROM anon;
 
 
 -- ------------------------------------------------------------------------------
--- 2.12 GRUPOS (visibles para toda la universidad, entrada con aprobación)
+-- 2.12 GRUPOS (visibles para toda la universidad, entrada con aprobación; creación y eliminación con moderación)
 -- Cualquiera puede crear un grupo y queda como creador y administrador. El enlace
 -- del grupo (WhatsApp u otra red) se guarda en group_links y SOLO lo puede leer
 -- quien ya es miembro. Para entrar se manda una solicitud que aprueba un admin.
@@ -1645,6 +1886,17 @@ CREATE TABLE IF NOT EXISTS public.groups (
     created_by UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Moderación: un grupo nuevo nace 'pending' y solo se publica cuando un moderador o administrador lo
+-- aprueba (nombre, imagen y descripción). Los grupos que ya existían antes de este cambio quedan
+-- aprobados: el DEFAULT solo se aplica a ellos, porque create_group inserta 'pending' explícitamente.
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'approved';
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS text_scan JSONB;
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS reviewed_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL;
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS review_note TEXT;
+ALTER TABLE public.groups DROP CONSTRAINT IF EXISTS groups_status_check;
+ALTER TABLE public.groups ADD CONSTRAINT groups_status_check CHECK (status IN ('pending', 'approved', 'rejected'));
 
 CREATE TABLE IF NOT EXISTS public.group_links (
     group_id UUID PRIMARY KEY REFERENCES public.groups(id) ON DELETE CASCADE,
@@ -1671,6 +1923,37 @@ CREATE TABLE IF NOT EXISTS public.group_join_requests (
     UNIQUE(group_id, profile_id)
 );
 
+-- Peticiones de quienes administran un grupo ya aprobado: pedir que se elimine o que lo lleve otra persona.
+-- Las resuelve un moderador o administrador de la plataforma; mientras tanto el grupo sigue como está.
+CREATE TABLE IF NOT EXISTS public.group_change_requests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    group_id UUID NOT NULL REFERENCES public.groups(id) ON DELETE CASCADE,
+    requested_by UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('delete', 'transfer')),
+    reason TEXT NOT NULL CHECK (char_length(reason) BETWEEN 10 AND 500),
+    new_owner_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+    resolved_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    resolved_at TIMESTAMPTZ,
+    resolution_note TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK ((kind = 'transfer') = (new_owner_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_group_change_pending ON public.group_change_requests(group_id) WHERE status = 'pending';
+
+-- Bitácora de decisiones sobre grupos (sin llaves foráneas a propósito: debe sobrevivir al grupo borrado).
+CREATE TABLE IF NOT EXISTS public.group_moderation_log (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    group_id UUID,
+    group_name TEXT,
+    action TEXT NOT NULL,
+    actor_id UUID,
+    target_id UUID,
+    note TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_groups_status ON public.groups(university_id, status);
 CREATE INDEX IF NOT EXISTS idx_groups_university ON public.groups(university_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_group_members_profile ON public.group_members(profile_id);
 CREATE INDEX IF NOT EXISTS idx_group_requests_group ON public.group_join_requests(group_id, status);
@@ -1679,6 +1962,8 @@ ALTER TABLE public.groups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.group_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.group_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.group_join_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_change_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_moderation_log ENABLE ROW LEVEL SECURITY;
 
 CREATE OR REPLACE FUNCTION public.is_group_member(p_group UUID)
 RETURNS BOOLEAN
@@ -1699,7 +1984,14 @@ $$;
 -- Solo lectura. Cualquier escritura se hace con las funciones (SECURITY DEFINER).
 DROP POLICY IF EXISTS "Ver grupos de mi universidad (nuevos)" ON public.groups;
 CREATE POLICY "Ver grupos de mi universidad (nuevos)" ON public.groups FOR SELECT TO authenticated
-USING (university_id = public.get_my_university_id());
+USING (
+  university_id = public.get_my_university_id()
+  AND (status = 'approved' OR created_by = auth.uid() OR public.is_moderator_or_admin())
+);
+
+DROP POLICY IF EXISTS "Ver mis peticiones sobre grupos" ON public.group_change_requests;
+CREATE POLICY "Ver mis peticiones sobre grupos" ON public.group_change_requests FOR SELECT TO authenticated
+USING (requested_by = auth.uid() OR public.is_group_admin(group_id));
 
 DROP POLICY IF EXISTS "Ver enlace solo si soy miembro" ON public.group_links;
 CREATE POLICY "Ver enlace solo si soy miembro" ON public.group_links FOR SELECT TO authenticated
@@ -1755,10 +2047,10 @@ DECLARE
   ds TEXT := btrim(COALESCE(p_description, ''));
   new_id UUID;
 BEGIN
-  IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión para crear un grupo.'; END IF;
+  IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión para enviar un grupo.'; END IF;
   SELECT university_id INTO uni FROM public.profiles
   WHERE id = me AND onboarding_completed = TRUE AND is_suspended = FALSE;
-  IF uni IS NULL THEN RAISE EXCEPTION 'Completa tu perfil para crear grupos.'; END IF;
+  IF uni IS NULL THEN RAISE EXCEPTION 'Completa tu perfil para enviar grupos.'; END IF;
 
   IF char_length(nm) < 3 OR char_length(nm) > 60 THEN
     RAISE EXCEPTION 'El nombre del grupo debe tener entre 3 y 60 caracteres.';
@@ -1770,12 +2062,16 @@ BEGIN
   IF p_image_path IS NOT NULL AND p_image_path NOT LIKE me::TEXT || '/%' THEN
     RAISE EXCEPTION 'Imagen no válida.';
   END IF;
-  IF (SELECT COUNT(*) FROM public.groups WHERE created_by = me) >= 5 THEN
-    RAISE EXCEPTION 'Ya creaste 5 grupos. Elimina uno para crear otro.';
+  IF (SELECT COUNT(*) FROM public.groups WHERE created_by = me AND status IN ('pending', 'approved')) >= 5 THEN
+    RAISE EXCEPTION 'Ya tienes 5 grupos (aprobados o en revisión).';
+  END IF;
+  IF (SELECT COUNT(*) FROM public.groups WHERE created_by = me AND status = 'pending') >= 2 THEN
+    RAISE EXCEPTION 'Ya tienes 2 grupos en revisión. Espera a que los revisen para enviar otro.';
   END IF;
 
-  INSERT INTO public.groups (university_id, name, description, category, image_path, created_by)
-  VALUES (uni, nm, ds, p_category, p_image_path, me)
+  -- Nace en revisión: no se ve para nadie más hasta que un moderador lo apruebe.
+  INSERT INTO public.groups (university_id, name, description, category, image_path, created_by, status, text_scan)
+  VALUES (uni, nm, ds, p_category, p_image_path, me, 'pending', public.scan_text(nm || ' ' || ds))
   RETURNING id INTO new_id;
   INSERT INTO public.group_links (group_id, url) VALUES (new_id, public.validate_group_link(p_link));
   INSERT INTO public.group_members (group_id, profile_id, role) VALUES (new_id, me, 'admin');
@@ -1783,6 +2079,8 @@ BEGIN
 END;
 $$;
 
+-- Editar el nombre, la descripción o la imagen de un grupo VUELVE A REVISIÓN (así nadie cambia un grupo
+-- aprobado por otro cosa); lo mismo al corregir un grupo rechazado. El enlace y la categoría no necesitan revisión.
 DROP FUNCTION IF EXISTS public.update_group(UUID, TEXT, TEXT, TEXT, TEXT, TEXT);
 CREATE FUNCTION public.update_group(
   p_group UUID, p_name TEXT, p_description TEXT, p_category TEXT, p_image_path TEXT, p_link TEXT
@@ -1792,10 +2090,13 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
 DECLARE
   me UUID := auth.uid();
+  g RECORD;
   nm TEXT := btrim(COALESCE(p_name, ''));
   ds TEXT := btrim(COALESCE(p_description, ''));
+  changed BOOLEAN;
 BEGIN
   IF NOT public.is_group_admin(p_group) THEN RAISE EXCEPTION 'Solo los administradores pueden editar el grupo.'; END IF;
+  SELECT * INTO g FROM public.groups WHERE id = p_group;
   IF char_length(nm) < 3 OR char_length(nm) > 60 THEN
     RAISE EXCEPTION 'El nombre del grupo debe tener entre 3 y 60 caracteres.';
   END IF;
@@ -1804,30 +2105,56 @@ BEGIN
     RAISE EXCEPTION 'Elige una categoría válida.';
   END IF;
   IF p_image_path IS NOT NULL AND p_image_path NOT LIKE me::TEXT || '/%'
-     AND p_image_path IS DISTINCT FROM (SELECT image_path FROM public.groups WHERE id = p_group) THEN
+     AND p_image_path IS DISTINCT FROM g.image_path THEN
     RAISE EXCEPTION 'Imagen no válida.';
   END IF;
 
-  UPDATE public.groups SET name = nm, description = ds, category = p_category, image_path = p_image_path
+  changed := nm IS DISTINCT FROM g.name OR ds IS DISTINCT FROM g.description OR p_image_path IS DISTINCT FROM g.image_path;
+
+  UPDATE public.groups
+  SET name = nm, description = ds, category = p_category, image_path = p_image_path,
+      status = CASE WHEN changed OR g.status = 'rejected' THEN 'pending' ELSE g.status END,
+      text_scan = CASE WHEN changed THEN public.scan_text(nm || ' ' || ds) ELSE g.text_scan END
   WHERE id = p_group;
+
   IF p_link IS NOT NULL AND btrim(p_link) <> '' THEN
     UPDATE public.group_links SET url = public.validate_group_link(p_link) WHERE group_id = p_group;
   END IF;
 END;
 $$;
 
+-- Eliminar un grupo lo hace SOLO un moderador o administrador de la plataforma, con motivo (queda en
+-- group_moderation_log). Quien creó o administra el grupo NUNCA lo elimina por su cuenta, esté en revisión,
+-- rechazado o aprobado: manda una petición con motivo (request_group_change) y la revisa la administración.
+-- Tampoco se puede eliminar directamente un grupo que uno mismo creó.
 -- Devuelve la ruta de la imagen para que la app pueda borrar el archivo.
 DROP FUNCTION IF EXISTS public.delete_group(UUID);
-CREATE FUNCTION public.delete_group(p_group UUID)
+DROP FUNCTION IF EXISTS public.delete_group(UUID, TEXT);
+CREATE FUNCTION public.delete_group(p_group UUID, p_note TEXT DEFAULT NULL)
 RETURNS TEXT
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
-DECLARE img TEXT;
+DECLARE
+  me UUID := auth.uid();
+  g RECORD;
+  note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
 BEGIN
-  SELECT image_path INTO img FROM public.groups WHERE id = p_group AND created_by = auth.uid();
-  IF NOT FOUND THEN RAISE EXCEPTION 'Solo el creador puede eliminar el grupo.'; END IF;
+  SELECT * INTO g FROM public.groups WHERE id = p_group;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Ese grupo ya no existe.'; END IF;
+
+  IF NOT (public.is_moderator_or_admin() AND g.university_id = public.get_my_university_id()) THEN
+    RAISE EXCEPTION 'Los grupos no se eliminan por cuenta propia. Pide la eliminación desde "Pedir cambios" y un administrador la revisará.';
+  END IF;
+  IF g.created_by = me THEN
+    RAISE EXCEPTION 'No puedes eliminar directamente un grupo que creaste. Pide su eliminación desde "Pedir cambios".';
+  END IF;
+  IF note IS NULL OR char_length(note) < 5 THEN RAISE EXCEPTION 'Escribe el motivo de la eliminación (mínimo 5 caracteres).'; END IF;
+  IF char_length(note) > 300 THEN RAISE EXCEPTION 'El motivo puede tener máximo 300 caracteres.'; END IF;
+
+  INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id, note)
+  VALUES (g.id, g.name, 'deleted', me, g.created_by, note);
   DELETE FROM public.groups WHERE id = p_group;
-  RETURN img;
+  RETURN g.image_path;
 END;
 $$;
 
@@ -1836,7 +2163,8 @@ CREATE FUNCTION public.list_groups()
 RETURNS TABLE (
   id UUID, name TEXT, description TEXT, category TEXT, image_path TEXT,
   created_by UUID, creator_name TEXT, created_at TIMESTAMPTZ,
-  member_count INTEGER, my_role TEXT, my_request_status TEXT, pending_requests INTEGER
+  member_count INTEGER, my_role TEXT, my_request_status TEXT, pending_requests INTEGER,
+  status TEXT, review_note TEXT, pending_change TEXT
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
 AS $$
@@ -1852,12 +2180,19 @@ BEGIN
          req.status,
          CASE WHEN mine.role = 'admin'
               THEN (SELECT COUNT(*) FROM public.group_join_requests r WHERE r.group_id = g.id AND r.status = 'pending')::INTEGER
-              ELSE 0 END
+              ELSE 0 END,
+         g.status,
+         CASE WHEN g.status = 'rejected' THEN g.review_note END,
+         CASE WHEN mine.role = 'admin'
+              THEN (SELECT c.kind FROM public.group_change_requests c WHERE c.group_id = g.id AND c.status = 'pending')
+              END
   FROM public.groups g
   JOIN public.profiles p ON p.id = g.created_by
   LEFT JOIN public.group_members mine ON mine.group_id = g.id AND mine.profile_id = me
   LEFT JOIN public.group_join_requests req ON req.group_id = g.id AND req.profile_id = me
   WHERE g.university_id = public.get_my_university_id()
+    -- los grupos en revisión o rechazados solo los ven quienes los administran
+    AND (g.status = 'approved' OR mine.role IS NOT NULL OR g.created_by = me)
   ORDER BY (mine.role IS NOT NULL) DESC, g.created_at DESC;
 END;
 $$;
@@ -1887,7 +2222,7 @@ DECLARE
 BEGIN
   IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión primero.'; END IF;
   IF msg IS NOT NULL AND char_length(msg) > 200 THEN RAISE EXCEPTION 'El mensaje puede tener máximo 200 caracteres.'; END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.groups WHERE id = p_group AND university_id = public.get_my_university_id()) THEN
+  IF NOT EXISTS (SELECT 1 FROM public.groups WHERE id = p_group AND university_id = public.get_my_university_id() AND status = 'approved') THEN
     RAISE EXCEPTION 'Ese grupo no existe.';
   END IF;
   IF public.is_group_member(p_group) THEN RAISE EXCEPTION 'Ya eres miembro de este grupo.'; END IF;
@@ -2039,9 +2374,277 @@ BEGIN
 END;
 $$;
 
+
+-- ---- Moderación de grupos y peticiones de cambio --------------------------------
+-- De qué plataforma es el enlace (quien modera ve esto, no el enlace)
+CREATE OR REPLACE FUNCTION public.group_link_network(p_url TEXT)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT CASE regexp_replace(lower(COALESCE(substring(p_url from '^https://([^/?#]+)'), '')), '^www\.', '')
+    WHEN 'chat.whatsapp.com' THEN 'WhatsApp' WHEN 'whatsapp.com' THEN 'WhatsApp' WHEN 'wa.me' THEN 'WhatsApp'
+    WHEN 'instagram.com' THEN 'Instagram' WHEN 'ig.me' THEN 'Instagram'
+    WHEN 't.me' THEN 'Telegram' WHEN 'telegram.me' THEN 'Telegram' WHEN 'telegram.dog' THEN 'Telegram'
+    WHEN 'discord.gg' THEN 'Discord' WHEN 'discord.com' THEN 'Discord'
+    WHEN 'facebook.com' THEN 'Facebook' WHEN 'm.facebook.com' THEN 'Facebook' WHEN 'fb.me' THEN 'Facebook' WHEN 'm.me' THEN 'Facebook'
+    WHEN 'signal.group' THEN 'Signal' WHEN 'signal.me' THEN 'Signal'
+    ELSE 'Otra' END;
+$$;
+
+-- Cuántas cosas esperan a quien modera (grupos por aprobar + peticiones). Sirve para el puntito rojo.
+DROP FUNCTION IF EXISTS public.count_group_moderation();
+CREATE FUNCTION public.count_group_moderation()
+RETURNS INTEGER
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT CASE WHEN NOT public.is_moderator_or_admin() THEN 0 ELSE (
+    (SELECT COUNT(*) FROM public.groups g WHERE g.university_id = public.get_my_university_id() AND g.status = 'pending')
+    + (SELECT COUNT(*) FROM public.group_change_requests c JOIN public.groups g ON g.id = c.group_id
+       WHERE g.university_id = public.get_my_university_id() AND c.status = 'pending')
+  )::INTEGER END;
+$$;
+
+-- Quien administra un grupo pide eliminarlo ('delete', en cualquier estado: en revisión, rechazado o aprobado) o
+-- que lo lleve otra persona ('transfer', solo grupos aprobados). Siempre con motivo. Lo resuelve un moderador
+-- o administrador de la plataforma.
+DROP FUNCTION IF EXISTS public.request_group_change(UUID, TEXT, TEXT, UUID);
+CREATE FUNCTION public.request_group_change(p_group UUID, p_kind TEXT, p_reason TEXT, p_new_owner UUID DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  g RECORD;
+  why TEXT := btrim(COALESCE(p_reason, ''));
+  new_id UUID;
+BEGIN
+  SELECT * INTO g FROM public.groups WHERE id = p_group AND university_id = public.get_my_university_id();
+  IF NOT FOUND THEN RAISE EXCEPTION 'Ese grupo no existe.'; END IF;
+  IF NOT public.is_group_admin(p_group) THEN RAISE EXCEPTION 'Solo los administradores del grupo pueden pedir cambios.'; END IF;
+  IF p_kind NOT IN ('delete', 'transfer') THEN RAISE EXCEPTION 'Tipo de petición no válido.'; END IF;
+  IF char_length(why) < 10 OR char_length(why) > 500 THEN
+    RAISE EXCEPTION 'Cuéntanos el motivo (entre 10 y 500 caracteres).';
+  END IF;
+
+  IF p_kind = 'transfer' THEN
+    IF g.status <> 'approved' THEN RAISE EXCEPTION 'Solo un grupo aprobado puede pasar a otra persona.'; END IF;
+    IF g.created_by <> me THEN RAISE EXCEPTION 'Solo quien creó el grupo puede pedir que otra persona lo lleve.'; END IF;
+    IF p_new_owner IS NULL OR p_new_owner = me
+       OR NOT EXISTS (SELECT 1 FROM public.group_members WHERE group_id = p_group AND profile_id = p_new_owner) THEN
+      RAISE EXCEPTION 'Elige a otra persona que ya sea miembro del grupo.';
+    END IF;
+  ELSE
+    p_new_owner := NULL;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM public.group_change_requests WHERE group_id = p_group AND status = 'pending') THEN
+    RAISE EXCEPTION 'Este grupo ya tiene una petición en revisión.';
+  END IF;
+
+  INSERT INTO public.group_change_requests (group_id, requested_by, kind, reason, new_owner_id)
+  VALUES (p_group, me, p_kind, why, p_new_owner)
+  RETURNING id INTO new_id;
+  RETURN new_id;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.cancel_group_change_request(UUID);
+CREATE FUNCTION public.cancel_group_change_request(p_group UUID)
+RETURNS VOID
+LANGUAGE sql SECURITY DEFINER SET search_path = public
+AS $$
+  UPDATE public.group_change_requests SET status = 'cancelled', resolved_at = NOW()
+  WHERE group_id = p_group AND status = 'pending' AND requested_by = auth.uid();
+$$;
+
+-- La petición más reciente del grupo (para que sus administradores vean cómo va o por qué se rechazó)
+DROP FUNCTION IF EXISTS public.get_group_change_request(UUID);
+CREATE FUNCTION public.get_group_change_request(p_group UUID)
+RETURNS TABLE (
+  id UUID, kind TEXT, reason TEXT, status TEXT, resolution_note TEXT, created_at TIMESTAMPTZ,
+  requested_by UUID, requester_name TEXT, new_owner_id UUID, new_owner_name TEXT
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT public.is_group_admin(p_group) THEN RAISE EXCEPTION 'Solo los administradores del grupo ven las peticiones.'; END IF;
+  RETURN QUERY
+  SELECT c.id, c.kind, c.reason, c.status, c.resolution_note, c.created_at,
+         c.requested_by, rq.full_name, c.new_owner_id, nw.full_name
+  FROM public.group_change_requests c
+  JOIN public.profiles rq ON rq.id = c.requested_by
+  LEFT JOIN public.profiles nw ON nw.id = c.new_owner_id
+  WHERE c.group_id = p_group
+  ORDER BY c.created_at DESC LIMIT 1;
+END;
+$$;
+
+-- Cola de grupos por aprobar
+DROP FUNCTION IF EXISTS public.list_group_submissions();
+CREATE FUNCTION public.list_group_submissions()
+RETURNS TABLE (
+  id UUID, name TEXT, description TEXT, category TEXT, image_path TEXT, created_at TIMESTAMPTZ,
+  creator_id UUID, creator_name TEXT, creator_career TEXT, creator_semester INTEGER, creator_photo TEXT,
+  text_scan JSONB, link_network TEXT, resubmitted BOOLEAN, previous_note TEXT,
+  prior_rejections INTEGER, member_count INTEGER
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT public.is_moderator_or_admin() THEN RAISE EXCEPTION 'Solo moderadores pueden ver la cola de grupos.'; END IF;
+  RETURN QUERY
+  SELECT g.id, g.name, g.description, g.category, g.image_path, g.created_at,
+         p.id, p.full_name, car.name, p.semester,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = p.id ORDER BY ph.position LIMIT 1),
+         g.text_scan,
+         public.group_link_network((SELECT l.url FROM public.group_links l WHERE l.group_id = g.id)),
+         (g.reviewed_at IS NOT NULL), g.review_note,
+         (SELECT COUNT(*) FROM public.groups x WHERE x.created_by = p.id AND x.status = 'rejected' AND x.id <> g.id)::INTEGER,
+         (SELECT COUNT(*) FROM public.group_members m WHERE m.group_id = g.id)::INTEGER
+  FROM public.groups g
+  JOIN public.profiles p ON p.id = g.created_by
+  LEFT JOIN public.careers car ON car.id = p.career_id
+  WHERE g.status = 'pending' AND g.university_id = public.get_my_university_id()
+  ORDER BY CASE g.text_scan->>'verdict' WHEN 'flagged' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, g.created_at;
+END;
+$$;
+
+-- p_decision: 'approve' | 'reject'. Rechazar exige un motivo, que verá quien envió el grupo
+-- (puede corregirlo y volver a enviarlo desde el mismo grupo).
+DROP FUNCTION IF EXISTS public.review_group(UUID, TEXT, TEXT);
+CREATE FUNCTION public.review_group(p_group UUID, p_decision TEXT, p_note TEXT DEFAULT NULL)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  my_role TEXT;
+  g RECORD;
+  note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
+BEGIN
+  SELECT role INTO my_role FROM public.profiles WHERE id = me;
+  IF my_role NOT IN ('moderator', 'admin') THEN RAISE EXCEPTION 'Solo moderadores pueden revisar grupos.'; END IF;
+  SELECT * INTO g FROM public.groups WHERE id = p_group;
+  IF NOT FOUND OR g.university_id <> public.get_my_university_id() THEN RAISE EXCEPTION 'Ese grupo ya no existe.'; END IF;
+  IF g.status <> 'pending' THEN RAISE EXCEPTION 'Este grupo ya fue revisado.'; END IF;
+  IF g.created_by = me AND my_role <> 'admin' THEN RAISE EXCEPTION 'Otra persona debe revisar tu grupo.'; END IF;
+  IF p_decision NOT IN ('approve', 'reject') THEN RAISE EXCEPTION 'Decisión no válida.'; END IF;
+
+  IF p_decision = 'approve' THEN
+    UPDATE public.groups SET status = 'approved', reviewed_by = me, reviewed_at = NOW(), review_note = NULL WHERE id = p_group;
+    INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id)
+    VALUES (g.id, g.name, 'approved', me, g.created_by);
+    RETURN;
+  END IF;
+
+  IF note IS NULL OR char_length(note) < 3 THEN RAISE EXCEPTION 'Escribe el motivo del rechazo (lo verá quien envió el grupo).'; END IF;
+  IF char_length(note) > 300 THEN RAISE EXCEPTION 'El motivo puede tener máximo 300 caracteres.'; END IF;
+  UPDATE public.groups SET status = 'rejected', reviewed_by = me, reviewed_at = NOW(), review_note = note WHERE id = p_group;
+  INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id, note)
+  VALUES (g.id, g.name, 'rejected', me, g.created_by, note);
+END;
+$$;
+
+-- Cola de peticiones (eliminar / cambiar de encargado)
+DROP FUNCTION IF EXISTS public.list_group_change_requests();
+CREATE FUNCTION public.list_group_change_requests()
+RETURNS TABLE (
+  request_id UUID, kind TEXT, reason TEXT, created_at TIMESTAMPTZ,
+  group_id UUID, group_name TEXT, group_image_path TEXT, member_count INTEGER,
+  requester_id UUID, requester_name TEXT, requester_career TEXT, requester_photo TEXT,
+  new_owner_id UUID, new_owner_name TEXT, new_owner_career TEXT, new_owner_photo TEXT
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT public.is_moderator_or_admin() THEN RAISE EXCEPTION 'Solo moderadores pueden ver las peticiones.'; END IF;
+  RETURN QUERY
+  SELECT c.id, c.kind, c.reason, c.created_at,
+         g.id, g.name, g.image_path, (SELECT COUNT(*) FROM public.group_members m WHERE m.group_id = g.id)::INTEGER,
+         rq.id, rq.full_name, rc.name,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = rq.id ORDER BY ph.position LIMIT 1),
+         nw.id, nw.full_name, nc.name,
+         (SELECT ph.storage_path FROM public.profile_photos ph WHERE ph.profile_id = nw.id ORDER BY ph.position LIMIT 1)
+  FROM public.group_change_requests c
+  JOIN public.groups g ON g.id = c.group_id
+  JOIN public.profiles rq ON rq.id = c.requested_by
+  LEFT JOIN public.careers rc ON rc.id = rq.career_id
+  LEFT JOIN public.profiles nw ON nw.id = c.new_owner_id
+  LEFT JOIN public.careers nc ON nc.id = nw.career_id
+  WHERE c.status = 'pending' AND g.university_id = public.get_my_university_id()
+  ORDER BY c.created_at;
+END;
+$$;
+
+-- Aprobar 'delete' elimina el grupo (devuelve la ruta de su imagen para borrar el archivo);
+-- aprobar 'transfer' pasa el grupo a la persona elegida, que queda como administradora.
+-- Rechazar exige un motivo, que verán los administradores del grupo.
+DROP FUNCTION IF EXISTS public.resolve_group_change(UUID, BOOLEAN, TEXT);
+CREATE FUNCTION public.resolve_group_change(p_request UUID, p_approve BOOLEAN, p_note TEXT DEFAULT NULL)
+RETURNS TEXT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  my_role TEXT;
+  r RECORD;
+  g RECORD;
+  note TEXT := NULLIF(btrim(COALESCE(p_note, '')), '');
+BEGIN
+  SELECT role INTO my_role FROM public.profiles WHERE id = me;
+  IF my_role NOT IN ('moderator', 'admin') THEN RAISE EXCEPTION 'Solo moderadores pueden resolver peticiones.'; END IF;
+  SELECT * INTO r FROM public.group_change_requests WHERE id = p_request FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La petición ya no existe.'; END IF;
+  IF r.status <> 'pending' THEN RAISE EXCEPTION 'Esta petición ya fue resuelta.'; END IF;
+  SELECT * INTO g FROM public.groups WHERE id = r.group_id;
+  IF g.university_id <> public.get_my_university_id() THEN RAISE EXCEPTION 'La petición ya no existe.'; END IF;
+  IF r.requested_by = me AND my_role <> 'admin' THEN RAISE EXCEPTION 'Otra persona debe resolver tu petición.'; END IF;
+  IF note IS NOT NULL AND char_length(note) > 300 THEN RAISE EXCEPTION 'La nota puede tener máximo 300 caracteres.'; END IF;
+
+  IF NOT p_approve THEN
+    IF note IS NULL OR char_length(note) < 3 THEN RAISE EXCEPTION 'Escribe el motivo del rechazo (lo verán los administradores del grupo).'; END IF;
+    UPDATE public.group_change_requests
+    SET status = 'rejected', resolved_by = me, resolved_at = NOW(), resolution_note = note WHERE id = p_request;
+    INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id, note)
+    VALUES (g.id, g.name, 'change_rejected', me, r.requested_by, note);
+    RETURN NULL;
+  END IF;
+
+  IF r.kind = 'delete' THEN
+    INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id, note)
+    VALUES (g.id, g.name, 'deleted', me, g.created_by, 'Petición del grupo: ' || r.reason);
+    DELETE FROM public.groups WHERE id = g.id; -- la petición se borra en cascada
+    RETURN g.image_path;
+  END IF;
+
+  -- transfer
+  IF NOT EXISTS (SELECT 1 FROM public.group_members WHERE group_id = g.id AND profile_id = r.new_owner_id) THEN
+    RAISE EXCEPTION 'La persona elegida ya no es miembro del grupo. Recházala o pide que elijan a otra.';
+  END IF;
+  UPDATE public.groups SET created_by = r.new_owner_id WHERE id = g.id;
+  UPDATE public.group_members SET role = 'admin' WHERE group_id = g.id AND profile_id = r.new_owner_id;
+  UPDATE public.group_change_requests
+  SET status = 'approved', resolved_by = me, resolved_at = NOW(), resolution_note = note WHERE id = p_request;
+  INSERT INTO public.group_moderation_log (group_id, group_name, action, actor_id, target_id, note)
+  VALUES (g.id, g.name, 'transferred', me, r.new_owner_id, COALESCE(note, 'Petición del grupo: ' || r.reason));
+  RETURN NULL;
+END;
+$$;
+
 GRANT EXECUTE ON FUNCTION public.create_group(TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_group(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.delete_group(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_group(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.count_group_moderation() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.request_group_change(UUID, TEXT, TEXT, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_group_change_request(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_group_change_request(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.list_group_submissions() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.review_group(UUID, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.list_group_change_requests() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.resolve_group_change(UUID, BOOLEAN, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.list_groups() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_group_link(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.request_join_group(UUID, TEXT) TO authenticated;
@@ -2054,7 +2657,15 @@ GRANT EXECUTE ON FUNCTION public.remove_group_member(UUID, UUID) TO authenticate
 GRANT EXECUTE ON FUNCTION public.leave_group(UUID) TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.create_group(TEXT, TEXT, TEXT, TEXT, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.update_group(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) FROM anon;
-REVOKE EXECUTE ON FUNCTION public.delete_group(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.delete_group(UUID, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.count_group_moderation() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.request_group_change(UUID, TEXT, TEXT, UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.cancel_group_change_request(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_group_change_request(UUID) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.list_group_submissions() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.review_group(UUID, TEXT, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.list_group_change_requests() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.resolve_group_change(UUID, BOOLEAN, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.list_groups() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_group_link(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.request_join_group(UUID, TEXT) FROM anon;
@@ -2235,7 +2846,7 @@ BEGIN
   LOOP
     IF norm ~ ('(^|[^a-z0-9])'
                || regexp_replace(public.normalize_filter_text(rec.term), '([.*+?^${}()|\[\]\\])', '\\\1', 'g')
-               || '($|[^a-z0-9])') THEN
+               || '(e?s)?($|[^a-z0-9])') THEN -- acepta el plural: "pendejo" también detecta "pendejos" y "cabrón" → "cabrones"
       hits := hits || jsonb_build_array(jsonb_build_object('term', rec.term, 'category', rec.category, 'severity', rec.severity));
       IF rec.severity = 'high' THEN highs := highs + 1;
       ELSIF rec.severity = 'medium' THEN meds := meds + 1;

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Users, Heart, CalendarDays, Clock, CalendarCheck, ChevronRight, AlertCircle } from 'lucide-react';
+import { Users, Heart, CalendarDays, Clock, CalendarCheck, ChevronRight, AlertCircle, MessageCircle } from 'lucide-react';
 import { useConnectionsStore, attentionCount, type Connection } from '@/features/connections/connectionsStore';
 import { MatchDetail } from '@/features/connections/MatchDetail';
 import type { ConnectionModeKey } from '@/features/auth/authStore';
@@ -31,6 +31,8 @@ function statusLine(c: Connection): { text: string; Icon: typeof Clock; strong: 
 
 const Row: React.FC<{ c: Connection; onOpen: () => void }> = ({ c, onOpen }) => {
   const s = statusLine(c);
+  const first = c.other.name.split(' ')[0];
+  const unread = c.unreadCount > 0;
   return (
     <button onClick={onOpen} className="group w-full text-left p-3 rounded-2xl bg-white dark:bg-ink-850 shadow-soft-sm hover:-translate-y-0.5 active:scale-[0.99] transition flex items-center gap-3.5">
       <span className="relative shrink-0">
@@ -46,7 +48,14 @@ const Row: React.FC<{ c: Connection; onOpen: () => void }> = ({ c, onOpen }) => 
           <s.Icon className="w-3.5 h-3.5 shrink-0 mt-[3px]" />
           <span className="line-clamp-2">{s.text}</span>
         </span>
+        {c.lastMessage && (
+          <span className={`flex items-start gap-1.5 text-sm leading-snug ${unread ? 'font-semibold text-slate-900 dark:text-slate-50' : 'text-slate-500 dark:text-haze-400'}`}>
+            <MessageCircle className="w-3.5 h-3.5 shrink-0 mt-[3px]" />
+            <span className="line-clamp-1">{c.lastSenderId === c.other.id ? `${first}: ` : 'Tú: '}{c.lastMessage}</span>
+          </span>
+        )}
       </span>
+      {unread && <span className="min-w-5 h-5 px-1.5 rounded-full bg-brand-600 text-white text-[11px] leading-5 text-center font-bold shrink-0" aria-label={`${c.unreadCount} mensajes sin leer`}>{c.unreadCount}</span>}
       <ChevronRight className="w-4 h-4 shrink-0 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
     </button>
   );
@@ -100,7 +109,7 @@ export const ConnectionsView: React.FC<{ onBackToDiscover?: () => void }> = ({ o
     <div className="max-w-md w-full mx-auto space-y-5 pb-6">
       <div>
         <h2 className="text-4xl font-semibold leading-none">Tus <Highlight>matches</Highlight></h2>
-        <p className="text-sm text-slate-500 dark:text-haze-400 mt-3">Propón un lugar y una hora en la escuela para conocerse en persona.</p>
+        <p className="text-sm text-slate-500 dark:text-haze-400 mt-3">Escríbanse (los mensajes se borran a las 24 horas) o propón un lugar y una hora en la escuela para conocerse en persona.</p>
       </div>
 
       <div className="grid grid-cols-2 p-1 rounded-full bg-haze-100 dark:bg-ink-850 shadow-soft-sm" role="tablist" aria-label="Tipo de match">
@@ -131,7 +140,7 @@ export const ConnectionsView: React.FC<{ onBackToDiscover?: () => void }> = ({ o
             {currentTab === 'dating' ? <Heart className="w-7 h-7" /> : <Users className="w-7 h-7" />}
           </span>
           <h3 className="text-2xl font-semibold">{currentTab === 'dating' ? 'Aún no tienes matches de pareja' : 'Aún no tienes matches de amistad'}</h3>
-          <p className="text-sm text-slate-500 dark:text-haze-400 max-w-[30ch]">Cuando a alguien le interese tu perfil y a ti el suyo, aparecerá aquí para que propongan verse.</p>
+          <p className="text-sm text-slate-500 dark:text-haze-400 max-w-[30ch]">Cuando a alguien le interese tu perfil y a ti el suyo, aparecerá aquí para que se escriban y propongan verse.</p>
           {onBackToDiscover && <button onClick={onBackToDiscover} className="h-12 px-6 rounded-full bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold shadow-glow-brand transition hover:-translate-y-0.5 active:scale-[0.97]">Ir a Descubrir</button>}
         </motion.div>
       ) : (

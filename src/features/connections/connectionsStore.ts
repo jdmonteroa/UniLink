@@ -3,7 +3,12 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase, friendlyError } from '@/lib/supabaseClient';
 import { photoUrl } from '@/lib/photos';
 import { useAuthStore, type ActionResult, type ConnectionModeKey } from '@/features/auth/authStore';
-import type { ReportReason } from '@/features/chat/chatStore';
+
+export type ReportReason = 'harassment' | 'sexual_content' | 'fake_profile' | 'spam' | 'other';
+
+/** Los mensajes del chat se borran a las 24 horas. */
+export const CHAT_TTL_HOURS = 24;
+export const MESSAGE_MAX = 500;
 
 /** Máximo de rondas de replanteamiento por propuesta (lo aplica la base de datos). */
 export const MAX_ROUNDS = 3;
@@ -45,6 +50,19 @@ export interface Connection {
   meetup: Meetup | null;
   /** Punto rojo: algo espera tu respuesta o te enteras de una respuesta nueva. */
   needsAttention: boolean;
+  /** Chat temporal del match (los mensajes duran 24 h). */
+  conversationId: string | null;
+  lastMessage: string;
+  lastMessageAt: string | null;
+  lastSenderId: string | null;
+  unreadCount: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  senderId: string;
+  content: string;
+  createdAt: string;
 }
 
 export interface HistoryItem {
@@ -110,6 +128,18 @@ interface ConnectionRow {
   meetup_response_note: string | null;
   meetup_updated_at: string | null;
   needs_attention: boolean;
+  conversation_id: string | null;
+  last_message: string | null;
+  last_message_at: string | null;
+  last_sender_id: string | null;
+  unread_count: number | null;
+}
+
+interface MessageRow {
+  id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
 }
 
 interface HistoryRow {
@@ -157,7 +187,15 @@ const mapConnection = (r: ConnectionRow): Connection => ({
       }
     : null,
   needsAttention: r.needs_attention,
+  conversationId: r.conversation_id,
+  lastMessage: r.last_message || '',
+  lastMessageAt: r.last_message_at,
+  lastSenderId: r.last_sender_id,
+  unreadCount: r.unread_count || 0,
 });
+
+const mapMessage = (r: MessageRow): ChatMessage => ({ id: r.id, senderId: r.sender_id, content: r.content, createdAt: r.created_at });
+const isFresh = (iso: string) => Date.now() - new Date(iso).getTime() < CHAT_TTL_HOURS * 3_600_000;
 
 const mapHistory = (r: HistoryRow): HistoryItem => ({
   id: r.id,
@@ -179,6 +217,7 @@ const mapHistory = (r: HistoryRow): HistoryItem => ({
 interface DemoDb {
   connections: Connection[];
   history: Record<string, HistoryItem[]>;
+  messages: Record<string, ChatMessage[]>;
 }
 let demoDb: DemoDb | null = null;
 
@@ -196,6 +235,7 @@ function getDemoDb(): DemoDb {
 
   const mk = (id: string, mode: ConnectionModeKey, other: Connection['other'], meetup: Meetup | null, needsAttention: boolean): Connection => ({
     matchId: id, mode, matchedAt: inHours(-30), other, meetup, needsAttention,
+    conversationId: `conv-${id}`, lastMessage: '', lastMessageAt: null, lastSenderId: null, unreadCount: 0,
   });
   const pendingFromThem: Meetup = {
     id: 'demo-mt-1', status: 'pending', proposedByMe: false, place: 'Cafetería de Diseño', when: inHours(26), round: 1,
@@ -205,9 +245,17 @@ function getDemoDb(): DemoDb {
     id: 'demo-mt-2', status: 'accepted', proposedByMe: true, place: 'Infoteca, mesas de la planta baja', when: inHours(50), round: 2,
     note: 'Repasamos Estructura de Datos antes del parcial?', responseNote: '', updatedAt: inHours(-5),
   };
+  const ago = (h: number) => inHours(-h);
   demoDb = {
+    messages: {
+      'demo-m1': [
+        { id: 'dm-1', senderId: 'demo-sofia', content: '¡Hola! Vi que también vas al cineclub 🎬', createdAt: ago(3) },
+        { id: 'dm-2', senderId: 'demo-user', content: 'Sí, voy casi todos los jueves. ¿Tú?', createdAt: ago(2.5) },
+        { id: 'dm-3', senderId: 'demo-sofia', content: 'Yo también, nos vemos ahí entonces', createdAt: ago(1) },
+      ],
+    },
     connections: [
-      mk('demo-m1', 'friendship', sofia, pendingFromThem, true),
+      { ...mk('demo-m1', 'friendship', sofia, pendingFromThem, true), lastMessage: 'Yo también, nos vemos ahí entonces', lastMessageAt: ago(1), lastSenderId: 'demo-sofia', unreadCount: 1 },
       mk('demo-m2', 'friendship', { ...diego, instagram: 'diego_ramirez' }, { ...accepted }, true),
       mk('demo-m3', 'friendship', valeria, null, false),
       mk('demo-m4', 'dating', emilio, null, false),
@@ -244,6 +292,11 @@ interface ConnectionsState {
   block: (connection: Connection) => Promise<ActionResult>;
   report: (connection: Connection, reason: ReportReason, description: string) => Promise<ActionResult>;
   setOpenMatchId: (id: string | null) => void;
+  /** Mensajes de las últimas 24 h, por conversación. */
+  messages: Record<string, ChatMessage[]>;
+  loadMessages: (connection: Connection) => Promise<void>;
+  sendMessage: (connection: Connection, content: string) => Promise<ActionResult>;
+  markChatRead: (connection: Connection) => Promise<void>;
   reset: () => void;
 }
 
@@ -252,9 +305,12 @@ const fail = (err: unknown, fallback: string): ActionResult => ({ success: false
 const toIso = (local: string) => new Date(local).toISOString();
 
 let channel: RealtimeChannel | null = null;
+let chatChannel: RealtimeChannel | null = null;
 let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
 function stopRealtime() {
+  if (chatChannel) void supabase.removeChannel(chatChannel);
+  chatChannel = null;
   if (channel) void supabase.removeChannel(channel);
   channel = null;
   if (reloadTimer) clearTimeout(reloadTimer);
@@ -279,6 +335,7 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => {
 
   return {
     connections: [],
+    messages: {},
     ownerId: null,
     isLoading: false,
     error: null,
@@ -289,7 +346,7 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => {
     reset: () => {
       stopRealtime();
       demoDb = null;
-      set({ connections: [], ownerId: null, isLoading: false, error: null, openMatchId: null });
+      set({ connections: [], messages: {}, ownerId: null, isLoading: false, error: null, openMatchId: null });
     },
 
     loadConnections: async () => {
@@ -318,6 +375,84 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => {
           })
           .subscribe();
       }
+      // Mensajes nuevos: se agregan al chat abierto y se refresca la lista (vista previa y no leídos)
+      if (!chatChannel) {
+        chatChannel = supabase
+          .channel('chat-inbox')
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+            const row = payload.new as MessageRow & { conversation_id: string };
+            const list = get().messages[row.conversation_id];
+            if (list && !list.some((m) => m.id === row.id)) {
+              set({ messages: { ...get().messages, [row.conversation_id]: [...list, mapMessage(row)] } });
+            }
+            if (reloadTimer) clearTimeout(reloadTimer);
+            reloadTimer = setTimeout(() => void get().loadConnections(), 400);
+          })
+          .subscribe();
+      }
+    },
+
+    loadMessages: async (connection) => {
+      const convId = connection.conversationId;
+      if (!convId) return;
+      if (auth().isDemo) {
+        const db = getDemoDb();
+        const fresh = (db.messages[connection.matchId] ?? []).filter((m) => isFresh(m.createdAt));
+        set({ messages: { ...get().messages, [convId]: fresh } });
+        return;
+      }
+      const since = new Date(Date.now() - CHAT_TTL_HOURS * 3_600_000).toISOString();
+      const { data } = await supabase
+        .from('messages')
+        .select('id, sender_id, content, created_at')
+        .eq('conversation_id', convId)
+        .gt('created_at', since)
+        .order('created_at', { ascending: true })
+        .limit(300);
+      set({ messages: { ...get().messages, [convId]: ((data || []) as MessageRow[]).map(mapMessage) } });
+    },
+
+    sendMessage: async (connection, raw) => {
+      const { user, isDemo } = auth();
+      const content = raw.trim();
+      const convId = connection.conversationId;
+      if (!user || !convId || !content) return { success: false };
+      if (content.length > MESSAGE_MAX) return { success: false, message: `El mensaje puede tener máximo ${MESSAGE_MAX} caracteres.` };
+      let msg: ChatMessage;
+      if (isDemo) {
+        msg = { id: `dm-${Date.now()}`, senderId: user.id, content, createdAt: new Date().toISOString() };
+        const db = getDemoDb();
+        db.messages[connection.matchId] = [...(db.messages[connection.matchId] ?? []), msg];
+      } else {
+        const { data, error } = await supabase
+          .from('messages')
+          .insert({ conversation_id: convId, sender_id: user.id, content })
+          .select('id, sender_id, content, created_at');
+        if (error) return fail(error, 'No se pudo enviar el mensaje.');
+        // El filtro de moderación descarta el mensaje sin error: no vuelve ninguna fila
+        if (!data || data.length === 0) return { success: false, message: 'Tu mensaje no se envió porque contiene lenguaje que va contra el código de conducta.' };
+        msg = mapMessage(data[0] as MessageRow);
+      }
+      const list = get().messages[convId] ?? [];
+      const connections = get().connections.map((c) => (c.matchId === connection.matchId
+        ? { ...c, lastMessage: msg.content, lastMessageAt: msg.createdAt, lastSenderId: user.id }
+        : c));
+      set({ messages: { ...get().messages, [convId]: list.some((m) => m.id === msg.id) ? list : [...list, msg] }, connections });
+      if (isDemo) getDemoDb().connections = connections;
+      return { success: true };
+    },
+
+    markChatRead: async (connection) => {
+      if (!connection.conversationId || connection.unreadCount === 0) return;
+      const patch = (c: Connection) => (c.matchId === connection.matchId ? { ...c, unreadCount: 0, needsAttention: c.meetup?.status === 'pending' && !c.meetup.proposedByMe } : c);
+      if (auth().isDemo) {
+        const db = getDemoDb();
+        db.connections = db.connections.map(patch);
+        set({ connections: db.connections });
+        return;
+      }
+      await supabase.rpc('mark_conversation_read', { p_conversation_id: connection.conversationId });
+      await get().loadConnections();
     },
 
     loadHistory: async (matchId) => {
