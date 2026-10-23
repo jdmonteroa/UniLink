@@ -5,6 +5,7 @@ import { useAuthStore, formatSemester, DEFAULT_SEEKING, type ConnectionModeKey, 
 import { SeekingPicker } from '@/components/SeekingPicker';
 import { InstallCard } from '@/components/InstallCard';
 import { AndroidDownloadCard } from '@/components/AndroidDownloadCard';
+import { SuggestionsCard } from '@/features/profile/SuggestionsCard';
 import { CheckBadgeIcon, UserGroupIcon, HeartIcon } from '@/components/icons';
 import { PhotoManager } from '@/components/PhotoManager';
 import { Avatar } from '@/components/Avatar';
@@ -409,6 +410,8 @@ export const ProfileView: React.FC = () => {
           </>
         )}
       </section>
+
+      <SuggestionsCard />
     </div>
   );
 };

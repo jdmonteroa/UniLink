@@ -1917,6 +1917,97 @@ GRANT EXECUTE ON FUNCTION public.get_reports_for_review() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.resolve_report(UUID, TEXT) TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.get_reports_for_review() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.resolve_report(UUID, TEXT) FROM anon;
+
+
+-- ------------------------------------------------------------------------------
+-- 2.17 SUGERENCIAS (cada persona puede mandar una por semana; las leen los administradores)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.suggestions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    author_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    body TEXT NOT NULL CHECK (char_length(body) BETWEEN 10 AND 1000),
+    status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'read', 'archived')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_author ON public.suggestions(author_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_suggestions_status ON public.suggestions(status, created_at DESC);
+ALTER TABLE public.suggestions ENABLE ROW LEVEL SECURITY;
+-- Solo se lee y se escribe a través de las funciones de abajo
+DROP POLICY IF EXISTS "Ver mis sugerencias" ON public.suggestions;
+CREATE POLICY "Ver mis sugerencias" ON public.suggestions FOR SELECT TO authenticated USING (auth.uid() = author_id);
+
+-- Envía una sugerencia (máximo una cada 7 días). Devuelve cuándo podrá enviar la siguiente.
+DROP FUNCTION IF EXISTS public.submit_suggestion(TEXT);
+CREATE FUNCTION public.submit_suggestion(p_body TEXT)
+RETURNS TIMESTAMPTZ
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  me UUID := auth.uid();
+  txt TEXT := btrim(COALESCE(p_body, ''));
+  last_at TIMESTAMPTZ;
+BEGIN
+  IF me IS NULL THEN RAISE EXCEPTION 'Inicia sesión para enviar una sugerencia.'; END IF;
+  IF char_length(txt) < 10 THEN RAISE EXCEPTION 'Cuéntanos un poco más (mínimo 10 caracteres).'; END IF;
+  IF char_length(txt) > 1000 THEN RAISE EXCEPTION 'La sugerencia puede tener máximo 1000 caracteres.'; END IF;
+  SELECT MAX(created_at) INTO last_at FROM public.suggestions WHERE author_id = me;
+  IF last_at IS NOT NULL AND last_at > NOW() - INTERVAL '7 days' THEN
+    RAISE EXCEPTION 'Ya enviaste una sugerencia esta semana. Podrás enviar otra el %.',
+      to_char((last_at + INTERVAL '7 days') AT TIME ZONE 'America/Mexico_City', 'DD/MM/YYYY');
+  END IF;
+  INSERT INTO public.suggestions (author_id, body) VALUES (me, txt);
+  RETURN NOW() + INTERVAL '7 days';
+END;
+$$;
+
+-- Cuándo podrá enviar la siguiente (NULL = ya puede)
+DROP FUNCTION IF EXISTS public.get_next_suggestion_at();
+CREATE FUNCTION public.get_next_suggestion_at()
+RETURNS TIMESTAMPTZ
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+  SELECT CASE WHEN MAX(created_at) > NOW() - INTERVAL '7 days' THEN MAX(created_at) + INTERVAL '7 days' END
+  FROM public.suggestions WHERE author_id = auth.uid();
+$$;
+
+-- Bandeja de los administradores
+DROP FUNCTION IF EXISTS public.get_suggestions_for_review();
+CREATE FUNCTION public.get_suggestions_for_review()
+RETURNS TABLE (id UUID, created_at TIMESTAMPTZ, status TEXT, body TEXT, author_name TEXT)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND role = 'admin') THEN RETURN; END IF;
+  RETURN QUERY
+  SELECT s.id, s.created_at, s.status, s.body, p.full_name
+  FROM public.suggestions s JOIN public.profiles p ON p.id = s.author_id
+  WHERE s.status <> 'archived'
+  ORDER BY (s.status = 'new') DESC, s.created_at DESC
+  LIMIT 200;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.set_suggestion_status(UUID, TEXT);
+CREATE FUNCTION public.set_suggestion_status(p_id UUID, p_status TEXT)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND role = 'admin') THEN
+    RAISE EXCEPTION 'Solo los administradores pueden revisar sugerencias.';
+  END IF;
+  IF p_status NOT IN ('new', 'read', 'archived') THEN RAISE EXCEPTION 'Estado no válido.'; END IF;
+  UPDATE public.suggestions SET status = p_status WHERE id = p_id;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.submit_suggestion(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_next_suggestion_at() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_suggestions_for_review() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.set_suggestion_status(UUID, TEXT) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.submit_suggestion(TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_next_suggestion_at() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.get_suggestions_for_review() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.set_suggestion_status(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_my_matches() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.unmatch(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.block_user(UUID) FROM anon;
