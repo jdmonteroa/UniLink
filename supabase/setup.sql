@@ -1814,6 +1814,52 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   RAISE NOTICE 'No se pudo programar la limpieza automática de mensajes: %', SQLERRM;
 END $$;
+
+-- Revisión de reportes entre personas (moderadores y administradores), con la copia de los mensajes
+DROP FUNCTION IF EXISTS public.get_reports_for_review();
+CREATE FUNCTION public.get_reports_for_review()
+RETURNS TABLE (
+  id UUID, created_at TIMESTAMPTZ, status TEXT, reason TEXT, description TEXT,
+  reporter_name TEXT, reported_id UUID, reported_name TEXT, reports_against INTEGER, messages JSONB
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_moderator_or_admin() THEN RETURN; END IF;
+  RETURN QUERY
+  SELECT r.id, r.created_at, r.status, r.reason, r.description,
+         rp.full_name, r.reported_id, rd.full_name,
+         (SELECT COUNT(*)::INTEGER FROM public.reports x WHERE x.reported_id = r.reported_id),
+         COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+                    'sender', CASE WHEN sn.sender_id = r.reporter_id THEN rp.full_name ELSE rd.full_name END,
+                    'content', sn.content, 'at', sn.message_created_at) ORDER BY sn.message_created_at)
+           FROM public.report_message_snapshots sn WHERE sn.report_id = r.id
+         ), '[]'::jsonb)
+  FROM public.reports r
+  JOIN public.profiles rp ON rp.id = r.reporter_id
+  JOIN public.profiles rd ON rd.id = r.reported_id
+  WHERE r.status IN ('pending', 'investigating')
+  ORDER BY r.created_at DESC
+  LIMIT 100;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.resolve_report(UUID, TEXT);
+CREATE FUNCTION public.resolve_report(p_report UUID, p_status TEXT)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_moderator_or_admin() THEN RAISE EXCEPTION 'No tienes permiso para revisar reportes.'; END IF;
+  IF p_status NOT IN ('investigating', 'resolved', 'dismissed') THEN RAISE EXCEPTION 'Estado no válido.'; END IF;
+  UPDATE public.reports SET status = p_status WHERE id = p_report;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.get_reports_for_review() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.resolve_report(UUID, TEXT) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.get_reports_for_review() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.resolve_report(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_my_matches() FROM anon;
 REVOKE EXECUTE ON FUNCTION public.unmatch(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.block_user(UUID) FROM anon;
